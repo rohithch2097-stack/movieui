@@ -74,6 +74,7 @@ const readFileDurationSeconds = (file) => new Promise((resolve) => {
 
 function App() {
   const fileInputRef = useRef(null)
+  const statusTimerRef = useRef(null)
   const [selectedFile, setSelectedFile] = useState(null)
   const [videos, setVideos] = useState([])
   const [status, setStatus] = useState('')
@@ -90,6 +91,12 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false)
   const [videoDurations, setVideoDurations] = useState({})
   const [copiedKey, setCopiedKey] = useState(null)
+
+  const setTimedStatus = (msg, delay = 5000) => {
+    if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+    setStatus(msg)
+    statusTimerRef.current = setTimeout(() => setStatus(''), delay)
+  }
 
   // Check if R2 credentials are configured and load any resumed session
   useEffect(() => {
@@ -243,7 +250,7 @@ function App() {
       })
       await r2Client.send(completeCommand)
 
-      setStatus('✅ Upload completed successfully.')
+      setTimedStatus('✅ Upload completed successfully.')
       setSelectedFile(null)
       if (durationSeconds > 0) {
         setVideoDurations((prev) => ({ ...prev, [objectKey]: durationSeconds }))
@@ -267,7 +274,7 @@ function App() {
         }
       }
 
-      setStatus(`Upload failed. Please try again from start. Error: ${error.message}`)
+      setTimedStatus(`Upload failed. Please try again from start. Error: ${error.message}`, 5000)
       setUploadProgress(0)
     } finally {
       setIsUploading(false)
@@ -290,9 +297,9 @@ function App() {
 
       setPreviewKey(key)
       setPreviewUrl(url)
-      setStatus('Preview ready.')
+      setTimedStatus('Preview ready.')
     } catch (error) {
-      setStatus(`Preview failed: ${error.message}`)
+      setTimedStatus(`Preview failed: ${error.message}`, 5000)
     } finally {
       setIsLoadingPreview(false)
     }
@@ -327,10 +334,10 @@ function App() {
       link.click()
       document.body.removeChild(link)
 
-      setStatus('Download started.')
+      setTimedStatus('Download started.')
       setDownloadProgress(0)
     } catch (error) {
-      setStatus(`Download failed: ${error.message}`)
+      setTimedStatus(`Download failed: ${error.message}`, 5000)
       setDownloadProgress(0)
     }
   }
@@ -348,10 +355,10 @@ function App() {
       })
 
       await r2Client.send(command)
-      setStatus('Video deleted successfully.')
+      setTimedStatus('Video deleted successfully.')
       await fetchVideos()
     } catch (error) {
-      setStatus(`Delete failed: ${error.message}`)
+      setTimedStatus(`Delete failed: ${error.message}`, 5000)
     }
   }
 
@@ -391,11 +398,11 @@ function App() {
         await r2Client.send(command)
         deleted++
       }
-      setStatus(`Deleted ${deleted} video(s) successfully.`)
+      setTimedStatus(`Deleted ${deleted} video(s) successfully.`)
       setSelectedVideos(new Set())
       await fetchVideos()
     } catch (error) {
-      setStatus(`Bulk delete failed: ${error.message}`)
+      setTimedStatus(`Bulk delete failed: ${error.message}`, 5000)
     }
   }
 
@@ -428,7 +435,7 @@ function App() {
     const link = `${import.meta.env.VITE_R2_ENDPOINT}/${bucketName}/${key}`
     navigator.clipboard.writeText(link)
     setCopiedKey(key)
-    setStatus(`Link copied to clipboard!`)
+    setTimedStatus('Link copied to clipboard!')
     setTimeout(() => setCopiedKey(null), 2000)
   }
 
