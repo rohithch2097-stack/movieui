@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 // Direct browser upload to Cloudflare R2 (no backend needed)
 const r2Client = new S3Client({
@@ -221,14 +222,12 @@ function App() {
         Key: key,
       })
 
-      const response = await r2Client.send(command)
-      const byteArray = await response.Body.transformToByteArray()
-      const blob = new Blob([byteArray], { type: response.ContentType || 'video/mp4' })
-      const url = URL.createObjectURL(blob)
+      // Stream preview directly from R2 with a short-lived signed URL.
+      const url = await getSignedUrl(r2Client, command, { expiresIn: 60 * 10 })
 
       setPreviewKey(key)
       setPreviewUrl(url)
-      setStatus('Preview loaded.')
+      setStatus('Preview ready.')
     } catch (error) {
       setStatus(`Preview failed: ${error.message}`)
     } finally {
@@ -237,7 +236,7 @@ function App() {
   }
 
   const closePreview = () => {
-    if (previewUrl) {
+    if (previewUrl && previewUrl.startsWith('blob:')) {
       URL.revokeObjectURL(previewUrl)
     }
     setPreviewKey(null)
@@ -245,41 +244,27 @@ function App() {
   }
 
   const downloadVideo = async (key) => {
-    setStatus('Downloading video...')
+    setStatus('Starting download...')
     setDownloadProgress(0)
 
     try {
+      const downloadName = key.split('-').slice(2).join('-') || key
       const command = new GetObjectCommand({
         Bucket: bucketName,
         Key: key,
+        ResponseContentDisposition: `attachment; filename="${downloadName.replace(/"/g, '')}"`,
       })
 
-      // Simulate progress
-      let progress = 0
-      const progressInterval = setInterval(() => {
-        progress = Math.min(progress + Math.random() * 30, 95)
-        setDownloadProgress(Math.floor(progress))
-      }, 200)
-
-      const response = await r2Client.send(command)
-
-      // Convert response stream to blob
-      const byteArray = await response.Body.transformToByteArray()
-      const blob = new Blob([byteArray], { type: response.ContentType || 'video/mp4' })
-
-      // Create download link
-      const url = URL.createObjectURL(blob)
+      // Use short-lived signed URL so browser streams directly from R2.
+      const url = await getSignedUrl(r2Client, command, { expiresIn: 60 * 10 })
       const link = document.createElement('a')
       link.href = url
-      link.download = key.split('-').slice(2).join('-') // Remove timestamp-uuid prefix for cleaner filename
+      link.download = downloadName
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
-      URL.revokeObjectURL(url)
 
-      clearInterval(progressInterval)
-      setDownloadProgress(100)
-      setStatus('Download completed.')
+      setStatus('Download started.')
       setDownloadProgress(0)
     } catch (error) {
       setStatus(`Download failed: ${error.message}`)
@@ -595,6 +580,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               src={previewUrl}
               controls
               autoPlay
+              preload="metadata"
               className="preview-video"
               style={{ width: '100%', maxHeight: '70vh' }}
             />
