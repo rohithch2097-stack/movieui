@@ -365,11 +365,47 @@ button[type="submit"] {
 }
 
 /* ============================================
-   SEARCH BAR
+   SEARCH + SORT ROW
    ============================================ */
 
-.search-bar {
+.search-sort-row {
+  display: flex;
+  gap: var(--spacing-md);
   margin: var(--spacing-lg) 0;
+  align-items: center;
+
+  .search-bar {
+    flex: 1;
+    margin: 0;
+  }
+
+  @media (max-width: 480px) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.sort-select {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-h);
+  font-size: 0.9rem;
+  font-family: var(--sans);
+  cursor: pointer;
+  transition: border-color 0.2s;
+  white-space: nowrap;
+  min-width: 160px;
+
+  &:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  @media (max-width: 480px) {
+    width: 100%;
+  }
 }
 
 .search-bar input {
@@ -647,13 +683,16 @@ button[type="submit"] {
   margin: 0;
   font-weight: 600;
   color: var(--text-h);
-  font-size: 1.05rem;
+  font-size: 0.95rem;
   word-break: break-word;
   line-height: 1.4;
+}
 
-  @media (max-width: 480px) {
-    font-size: 0.95rem;
-  }
+.video-date {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text);
+  margin-top: 2px;
 }
 
 .video-meta {
@@ -1023,21 +1062,39 @@ button[type="submit"] {
 }
 
 .btn-download-from-preview,
-.btn-close-preview {
+.btn-close-preview,
+.btn-nav-preview {
   flex: 1;
-  min-width: 140px;
-  padding: 0.75rem 1.5rem;
+  min-width: 100px;
+  padding: 0.75rem 1rem;
   border: none;
   border-radius: var(--radius-md);
   font-weight: 600;
   cursor: pointer;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   transition: all 0.3s;
 
   @media (max-width: 480px) {
-    min-width: 100%;
-    padding: 0.7rem 1.25rem;
-    font-size: 0.9rem;
+    min-width: unset;
+    padding: 0.65rem 0.75rem;
+    font-size: 0.85rem;
+  }
+}
+
+.btn-nav-preview {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border) !important;
+  color: var(--text-h);
+
+  &:hover:not(:disabled) {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent) !important;
+  }
+
+  &:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
 }
 

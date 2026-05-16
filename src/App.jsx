@@ -167,6 +167,7 @@ function App() {
    const [thumbnailUrls, setThumbnailUrls] = useState({})
    const [activeTab, setActiveTab] = useState('all') // 'all' | 'video' | 'image'
    const [openMenuKey, setOpenMenuKey] = useState(null) // Mobile menu state
+   const [sortBy, setSortBy] = useState('newest') // 'newest'|'oldest'|'name-az'|'name-za'|'largest'|'smallest'
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -203,14 +204,24 @@ function App() {
     return `${selectedFile.name} (${sizeInMb} MB)`
   }, [selectedFile])
 
+  // Bug fix #3 — paginate through ALL objects (ListObjectsV2 max 1000/page)
   const fetchVideos = async () => {
-    if (configError) return // skip if not configured
+    if (configError) return
     setIsLoadingVideos(true)
     try {
-      const command = new ListObjectsV2Command({ Bucket: bucketName })
-      const response = await r2Client.send(command)
+      let allItems = []
+      let continuationToken = undefined
+      do {
+        const command = new ListObjectsV2Command({
+          Bucket: bucketName,
+          ContinuationToken: continuationToken,
+        })
+        const response = await r2Client.send(command)
+        allItems = [...allItems, ...(response.Contents ?? [])]
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined
+      } while (continuationToken)
 
-      const videoList = (response.Contents ?? [])
+      const videoList = allItems
         .filter((item) => item.Key && !item.Key.startsWith('thumbnails/'))
         .map((item) => {
           const parsed = parseObjectKey(item.Key)
@@ -224,7 +235,7 @@ function App() {
             lastModified: item.LastModified,
           }
         })
-        .sort((a, b) => b.lastModified - a.lastModified) // Sort by newest first
+        .sort((a, b) => b.lastModified - a.lastModified)
 
       setVideos(videoList)
 
@@ -468,20 +479,18 @@ function App() {
     }
   }
 
+  // Bug fix #1 — also delete the orphaned thumbnail from R2
   const deleteVideo = async (key) => {
-    if (!window.confirm(`Delete this video? This action cannot be undone.`)) {
-      return
-    }
+    if (!window.confirm(`Delete this file? This action cannot be undone.`)) return
 
-    setStatus('Deleting video...')
+    setStatus('Deleting...')
     try {
-      const command = new DeleteObjectCommand({
-        Bucket: bucketName,
-        Key: key,
-      })
-
-      await r2Client.send(command)
-      setTimedStatus('Video deleted successfully.')
+      await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }))
+      try {
+        await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
+      } catch { /* thumbnail may not exist — ignore */ }
+      setThumbnailUrls(prev => { const n = { ...prev }; delete n[key]; return n })
+      setTimedStatus('File deleted successfully.')
       await fetchVideos()
     } catch (error) {
       setTimedStatus(`Delete failed: ${error.message}`, 5000)
@@ -507,24 +516,18 @@ function App() {
   }
 
   const bulkDeleteVideos = async () => {
-    if (selectedVideos.size === 0) {
-      setStatus('No videos selected.')
-      return
-    }
+    if (selectedVideos.size === 0) { setStatus('No files selected.'); return }
+    if (!window.confirm(`Delete ${selectedVideos.size} file(s)? This action cannot be undone.`)) return
 
-    if (!window.confirm(`Delete ${selectedVideos.size} video(s)? This action cannot be undone.`)) {
-      return
-    }
-
-    setStatus('Deleting videos...')
+    setStatus('Deleting files...')
     try {
-      let deleted = 0
       for (const key of selectedVideos) {
-        const command = new DeleteObjectCommand({ Bucket: bucketName, Key: key })
-        await r2Client.send(command)
-        deleted++
+        await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }))
+        try {
+          await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
+        } catch { /* ignore missing thumbnail */ }
       }
-      setTimedStatus(`Deleted ${deleted} video(s) successfully.`)
+      setTimedStatus(`Deleted ${selectedVideos.size} file(s) successfully.`)
       setSelectedVideos(new Set())
       await fetchVideos()
     } catch (error) {
@@ -547,22 +550,72 @@ function App() {
     const hours = Math.floor(seconds / 3600)
     const minutes = Math.floor((seconds % 3600) / 60)
     const secs = Math.floor(seconds % 60)
-
-    if (hours > 0) {
-      return `${hours}h ${minutes}m ${secs}s`
-    } else if (minutes > 0) {
-      return `${minutes}m ${secs}s`
-    } else {
-      return `${secs}s`
-    }
+    if (hours > 0) return `${hours}h ${minutes}m ${secs}s`
+    if (minutes > 0) return `${minutes}m ${secs}s`
+    return `${secs}s`
   }
 
-  const copyToClipboard = (key) => {
-    const link = `${import.meta.env.VITE_R2_ENDPOINT}/${bucketName}/${key}`
-    navigator.clipboard.writeText(link)
-    setCopiedKey(key)
-    setTimedStatus('Link copied to clipboard!')
-    setTimeout(() => setCopiedKey(null), 2000)
+  // Feature #5 — upload date formatting
+  const formatDate = (date) => {
+    if (!date) return ''
+    return new Date(date).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
+  }
+
+  // Feature #4 — sort + filter
+  const filteredVideos = useMemo(() => {
+    let list = videos
+    if (activeTab === 'video') list = list.filter(v => v.fileType === 'video')
+    else if (activeTab === 'image') list = list.filter(v => v.fileType === 'image')
+    if (searchQuery.trim()) list = list.filter(v => v.fileName.toLowerCase().includes(searchQuery.toLowerCase()))
+    const sorted = [...list]
+    switch (sortBy) {
+      case 'newest':   sorted.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified)); break
+      case 'oldest':   sorted.sort((a, b) => new Date(a.lastModified) - new Date(b.lastModified)); break
+      case 'name-az':  sorted.sort((a, b) => a.fileName.localeCompare(b.fileName)); break
+      case 'name-za':  sorted.sort((a, b) => b.fileName.localeCompare(a.fileName)); break
+      case 'largest':  sorted.sort((a, b) => b.size - a.size); break
+      case 'smallest': sorted.sort((a, b) => a.size - b.size); break
+    }
+    return sorted
+  }, [videos, searchQuery, activeTab, sortBy])
+
+  // Feature #6 — prev/next navigation
+  const previewIndex = useMemo(
+    () => filteredVideos.findIndex(v => v.key === previewKey),
+    [previewKey, filteredVideos]
+  )
+
+  const navigatePreview = async (direction) => {
+    const newIndex = previewIndex + direction
+    if (newIndex < 0 || newIndex >= filteredVideos.length) return
+    await previewVideo(filteredVideos[newIndex].key)
+  }
+
+  // Keyboard: Escape = close, ← → = prev/next
+  useEffect(() => {
+    const handleKey = (e) => {
+      if (!previewUrl) return
+      if (e.key === 'Escape') closePreview()
+      if (e.key === 'ArrowLeft')  navigatePreview(-1)
+      if (e.key === 'ArrowRight') navigatePreview(1)
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [previewUrl, previewIndex, filteredVideos])
+  const copyToClipboard = async (key) => {
+    try {
+      const url = await getSignedUrl(
+        r2Client,
+        new GetObjectCommand({ Bucket: bucketName, Key: key }),
+        { expiresIn: 60 * 60 * 24 } // 24 hours
+      )
+      await navigator.clipboard.writeText(url)
+      setCopiedKey(key)
+      setTimedStatus('✅ Signed link copied! Valid for 24 hours.')
+      setTimeout(() => setCopiedKey(null), 2000)
+    } catch (error) {
+      setTimedStatus(`Copy failed: ${error.message}`, 5000)
+    }
   }
 
   const handleDragOver = (e) => {
@@ -593,13 +646,6 @@ function App() {
     }
   }
 
-  const filteredVideos = useMemo(() => {
-    let list = videos
-    if (activeTab === 'video') list = list.filter(v => v.fileType === 'video')
-    else if (activeTab === 'image') list = list.filter(v => v.fileType === 'image')
-    if (!searchQuery.trim()) return list
-    return list.filter(v => v.fileName.toLowerCase().includes(searchQuery.toLowerCase()))
-  }, [videos, searchQuery, activeTab])
 
   const previewFileType = previewKey ? getFileType(parseObjectKey(previewKey).fileName) : null
 
@@ -666,14 +712,29 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           ))}
         </div>
 
-        <div className="search-bar">
-          <input
-            type="text"
-            placeholder="🔍 Search by name..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+        <div className="search-sort-row">
+          <div className="search-bar">
+            <input
+              type="text"
+              placeholder="🔍 Search by name..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              disabled={configError}
+            />
+          </div>
+          <select
+            className="sort-select"
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
             disabled={configError}
-          />
+          >
+            <option value="newest">🕐 Newest first</option>
+            <option value="oldest">🕐 Oldest first</option>
+            <option value="name-az">🔤 Name A → Z</option>
+            <option value="name-za">🔤 Name Z → A</option>
+            <option value="largest">📦 Largest first</option>
+            <option value="smallest">📦 Smallest first</option>
+          </select>
         </div>
 
         {filteredVideos.length > 0 && (
@@ -759,9 +820,10 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                       <span className={`file-type-badge ${video.fileType}`}>{video.fileType}</span>
                       {' '}{video.sizeLabel}
                       {(video.durationSeconds || videoDurations[video.key])
-                        ? <> • {formatDuration(video.durationSeconds || videoDurations[video.key])}</>
+                        ? <> · {formatDuration(video.durationSeconds || videoDurations[video.key])}</>
                         : null}
                     </p>
+                    <p className="video-date">📅 {formatDate(video.lastModified)}</p>
                   </div>
                   <div className="video-actions">
                     <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">
@@ -792,7 +854,12 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               <h3 style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '80%' }}>
                 {previewFileType === 'image' ? '🖼️' : '🎬'} {previewKey ? parseObjectKey(previewKey).fileName : ''}
               </h3>
-              <button className="close-btn" onClick={closePreview}>✕</button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text)', whiteSpace: 'nowrap' }}>
+                  {previewIndex + 1} / {filteredVideos.length}
+                </span>
+                <button className="close-btn" onClick={closePreview}>✕</button>
+              </div>
             </div>
             {previewFileType === 'image' ? (
               <img
@@ -812,10 +879,22 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               />
             )}
             <div className="preview-actions">
+              <button
+                className="btn-nav-preview"
+                onClick={() => navigatePreview(-1)}
+                disabled={previewIndex <= 0}
+                title="Previous (←)"
+              >← Prev</button>
               <button onClick={() => downloadVideo(previewKey)} className="btn-download-from-preview">
                 ⬇️ Download
               </button>
               <button onClick={closePreview} className="btn-close-preview">Close</button>
+              <button
+                className="btn-nav-preview"
+                onClick={() => navigatePreview(1)}
+                disabled={previewIndex >= filteredVideos.length - 1}
+                title="Next (→)"
+              >Next →</button>
             </div>
           </div>
         </div>
