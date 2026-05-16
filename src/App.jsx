@@ -145,9 +145,10 @@ const readFileDurationSeconds = (file) => new Promise((resolve) => {
 })
 
 function App() {
-  const fileInputRef = useRef(null)
-  const statusTimerRef = useRef(null)
-  const [selectedFile, setSelectedFile] = useState(null)
+   const fileInputRef = useRef(null)
+   const statusTimerRef = useRef(null)
+   const menuRef = useRef(null)
+   const [selectedFile, setSelectedFile] = useState(null)
   const [videos, setVideos] = useState([])
   const [status, setStatus] = useState('')
   const [isUploading, setIsUploading] = useState(false)
@@ -161,10 +162,11 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedVideos, setSelectedVideos] = useState(new Set())
   const [isDragOver, setIsDragOver] = useState(false)
-  const [videoDurations, setVideoDurations] = useState({})
-  const [copiedKey, setCopiedKey] = useState(null)
-  const [thumbnailUrls, setThumbnailUrls] = useState({})
-  const [activeTab, setActiveTab] = useState('all') // 'all' | 'video' | 'image'
+   const [videoDurations, setVideoDurations] = useState({})
+   const [copiedKey, setCopiedKey] = useState(null)
+   const [thumbnailUrls, setThumbnailUrls] = useState({})
+   const [activeTab, setActiveTab] = useState('all') // 'all' | 'video' | 'image'
+   const [openMenuKey, setOpenMenuKey] = useState(null) // Mobile menu state
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -172,14 +174,28 @@ function App() {
     statusTimerRef.current = setTimeout(() => setStatus(''), delay)
   }
 
-  // Check if R2 credentials are configured and load any resumed session
-  useEffect(() => {
-    if (!import.meta.env.VITE_R2_ACCESS_KEY_ID || !import.meta.env.VITE_R2_SECRET_ACCESS_KEY) {
-      setConfigError('R2 credentials not configured in .env.local')
-    } else {
-      fetchVideos()
-    }
-  }, [])
+   // Check if R2 credentials are configured and load any resumed session
+   useEffect(() => {
+     if (!import.meta.env.VITE_R2_ACCESS_KEY_ID || !import.meta.env.VITE_R2_SECRET_ACCESS_KEY) {
+       setConfigError('R2 credentials not configured in .env.local')
+     } else {
+       fetchVideos()
+     }
+   }, [])
+
+   // Close menu when clicking outside
+   useEffect(() => {
+     const handleClickOutside = (event) => {
+       if (menuRef.current && !menuRef.current.contains(event.target)) {
+         setOpenMenuKey(null)
+       }
+     }
+
+     if (openMenuKey) {
+       document.addEventListener('click', handleClickOutside)
+       return () => document.removeEventListener('click', handleClickOutside)
+     }
+   }, [openMenuKey])
 
   const selectedFileLabel = useMemo(() => {
     if (!selectedFile) return 'No file selected'
@@ -683,57 +699,81 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
             {searchQuery ? 'No files match your search.' : 'No files found in bucket.'}
           </p>
         ) : (
-          <ul className="video-list">
-            {filteredVideos.map((video) => (
-              <li key={video.key} className="video-item">
-                <input
-                  type="checkbox"
-                  checked={selectedVideos.has(video.key)}
-                  onChange={() => toggleVideoSelection(video.key)}
-                  className="video-checkbox"
-                />
-                {thumbnailUrls[video.key] ? (
-                  <div className="video-thumbnail-wrap">
-                    <img
-                      src={thumbnailUrls[video.key]}
-                      alt={video.fileName}
-                      className="video-thumbnail"
-                      onError={(e) => {
-                        e.target.parentElement.style.display = 'none'
-                        e.target.parentElement.nextSibling && (e.target.parentElement.nextSibling.style.display = 'flex')
-                      }}
-                    />
-                    {video.fileType === 'video' && (
-                      <div className="thumbnail-play-btn" aria-hidden="true">▶</div>
+           <ul className="video-list" ref={menuRef}>
+             {filteredVideos.map((video) => (
+               <li key={video.key} className="video-item">
+                 <input
+                   type="checkbox"
+                   checked={selectedVideos.has(video.key)}
+                   onChange={() => toggleVideoSelection(video.key)}
+                   className="video-checkbox"
+                 />
+
+                  {/* 3-dot menu — absolute positioned on card, visually overlays top-right of thumbnail */}
+                  <div className="video-menu-container">
+                    <button
+                      type="button"
+                      className="video-menu-btn"
+                      onClick={(e) => { e.stopPropagation(); setOpenMenuKey(openMenuKey === video.key ? null : video.key) }}
+                      title="More options"
+                    >⋯</button>
+                    {openMenuKey === video.key && (
+                      <div className="video-menu-dropdown">
+                        <button type="button" className="video-menu-item" title="Copy link" onClick={() => { copyToClipboard(video.key); setOpenMenuKey(null) }}>🔗</button>
+                        <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
+                        <button type="button" className="video-menu-item dangerous" title="Delete" onClick={() => { deleteVideo(video.key); setOpenMenuKey(null) }}>🗑️</button>
+                      </div>
                     )}
                   </div>
-                ) : null}
-                <div
-                  className="video-thumbnail-placeholder"
-                  style={{ display: thumbnailUrls[video.key] ? 'none' : 'flex' }}
-                >{video.fileType === 'image' ? '🖼️' : '🎬'}</div>
-                <div className="video-info">
-                  <p className="video-name">{video.fileName}</p>
-                  <p className="video-meta">
-                    <span className={`file-type-badge ${video.fileType}`}>{video.fileType}</span>
-                    {' '}{video.sizeLabel}
-                    {(video.durationSeconds || videoDurations[video.key])
-                      ? <> • {formatDuration(video.durationSeconds || videoDurations[video.key])}</>
-                      : null}
-                  </p>
-                </div>
-                <div className="video-actions">
-                  <button type="button" onClick={() => previewVideo(video.key)} disabled={isLoadingPreview} className="btn-preview">👁️</button>
-                  <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">
-                    {copiedKey === video.key ? '✓' : '🔗'}
-                  </button>
-                  <button type="button" onClick={() => downloadVideo(video.key)} className="btn-download">⬇️</button>
-                  <button type="button" onClick={() => deleteVideo(video.key)} className="btn-delete">🗑️</button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+
+                  {/* Clicking thumbnail/play opens preview */}
+                  {thumbnailUrls[video.key] ? (
+                    <div
+                      className="video-thumbnail-wrap"
+                      onClick={() => previewVideo(video.key)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <img
+                        src={thumbnailUrls[video.key]}
+                        alt={video.fileName}
+                        className="video-thumbnail"
+                        onError={(e) => {
+                          e.target.parentElement.style.display = 'none'
+                          e.target.parentElement.nextSibling && (e.target.parentElement.nextSibling.style.display = 'flex')
+                        }}
+                      />
+                      {video.fileType === 'video' && (
+                        <div className="thumbnail-play-btn" aria-label="Play video">▶</div>
+                      )}
+                    </div>
+                  ) : null}
+                  <div
+                    className="video-thumbnail-placeholder"
+                    style={{ display: thumbnailUrls[video.key] ? 'none' : 'flex', cursor: 'pointer' }}
+                    onClick={() => previewVideo(video.key)}
+                  >{video.fileType === 'image' ? '🖼️' : '🎬'}</div>
+
+                  <div className="video-info">
+                    <p className="video-name">{video.fileName}</p>
+                    <p className="video-meta">
+                      <span className={`file-type-badge ${video.fileType}`}>{video.fileType}</span>
+                      {' '}{video.sizeLabel}
+                      {(video.durationSeconds || videoDurations[video.key])
+                        ? <> • {formatDuration(video.durationSeconds || videoDurations[video.key])}</>
+                        : null}
+                    </p>
+                  </div>
+                  <div className="video-actions">
+                    <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">
+                      {copiedKey === video.key ? '✓' : '🔗'}
+                    </button>
+                    <button type="button" onClick={() => downloadVideo(video.key)} className="btn-download" title="Download">⬇️</button>
+                    <button type="button" onClick={() => deleteVideo(video.key)} className="btn-delete" title="Delete">🗑️</button>
+                  </div>
+               </li>
+             ))}
+           </ul>
+         )}
 
         {downloadProgress > 0 && downloadProgress < 100 && (
           <div className="progress-bar">
@@ -749,7 +789,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
         <div className="preview-modal-overlay" onClick={closePreview}>
           <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
             <div className="preview-header">
-              <h3>{previewFileType === 'image' ? 'Image Preview' : 'Video Preview'}</h3>
+              <h3 style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '80%' }}>
+                {previewFileType === 'image' ? '🖼️' : '🎬'} {previewKey ? parseObjectKey(previewKey).fileName : ''}
+              </h3>
               <button className="close-btn" onClick={closePreview}>✕</button>
             </div>
             {previewFileType === 'image' ? (

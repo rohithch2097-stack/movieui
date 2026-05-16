@@ -65,8 +65,6 @@
   }
 
   &:hover {
-    border-color: var(--accent-border);
-    box-shadow: var(--shadow-lg);
   }
 }
 
@@ -500,7 +498,7 @@ button[type="submit"] {
   }
 
   @media (max-width: 480px) {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
     gap: var(--spacing-md);
   }
 }
@@ -513,9 +511,13 @@ button[type="submit"] {
   border-radius: var(--radius-lg);
   padding: var(--spacing-md);
   background: var(--bg-secondary);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
-  overflow: hidden;
+  overflow: visible;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
 
   &::before {
     content: '';
@@ -524,20 +526,14 @@ button[type="submit"] {
     left: 0;
     right: 0;
     bottom: 0;
-    background: linear-gradient(135deg, transparent, rgba(99, 102, 241, 0.05), transparent);
     opacity: 0;
-    transition: opacity 0.3s;
     pointer-events: none;
   }
 
-  &:hover {
-    border-color: var(--accent-border);
-    box-shadow: var(--shadow-lg);
-    transform: translateY(-4px);
-
-    &::before {
-      opacity: 1;
-    }
+  &:hover,
+  &:active {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 
     .video-thumbnail {
       transform: scale(1.05);
@@ -550,9 +546,9 @@ button[type="submit"] {
   }
 
   @media (max-width: 480px) {
-    flex-direction: row;
-    align-items: flex-start;
-    padding: var(--spacing-md);
+    flex-direction: column;
+    align-items: stretch;
+    padding: var(--spacing-sm);
   }
 }
 
@@ -576,8 +572,8 @@ button[type="submit"] {
   background: #000;
 
   @media (max-width: 480px) {
-    width: 100px;
-    height: 70px;
+    width: 100%;
+    height: 120px;
     flex-shrink: 0;
   }
 }
@@ -596,18 +592,18 @@ button[type="submit"] {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.35);
   color: white;
-  font-size: 1.75rem;
+  font-size: 2rem;
   border-radius: var(--radius-md);
   pointer-events: none;
-  transition: all 0.3s;
-  backdrop-filter: blur(4px);
+  transition: all 0.25s;
+  overflow: hidden;
 }
 
-.video-item:hover .thumbnail-play-btn {
-  background: rgba(99, 102, 241, 0.7);
-  font-size: 2rem;
+.video-thumbnail-wrap:hover .thumbnail-play-btn {
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 2.4rem;
 }
 
 .video-thumbnail-placeholder {
@@ -624,11 +620,12 @@ button[type="submit"] {
     rgba(99, 102, 241, 0.03)
   );
   font-size: 2.5rem;
+  position: relative;
 
   @media (max-width: 480px) {
-    width: 100px;
-    height: 70px;
-    font-size: 1.75rem;
+    width: 100%;
+    height: 120px;
+    font-size: 2rem;
   }
 }
 
@@ -700,15 +697,118 @@ button[type="submit"] {
 }
 
 .video-actions {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: var(--spacing-sm);
-  margin-top: var(--spacing-md);
+  display: none;
+}
 
-  @media (max-width: 480px) {
-    grid-template-columns: repeat(4, 1fr);
-    gap: var(--spacing-xs);
-    margin-top: 0;
+/* ============================================
+   3-DOT MENU — TOP-RIGHT CORNER OF THUMBNAIL
+   ============================================ */
+
+/* Sits absolutely on the card at the same offset as the thumbnail top-right corner */
+.video-menu-container {
+  position: absolute;
+  /* card padding (--spacing-md = 1rem) positions this right on the thumbnail edge */
+  top: calc(var(--spacing-md) + 8px);
+  right: calc(var(--spacing-md) + 8px);
+  z-index: 20;
+  /* desktop: reveal on card hover */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.video-item:hover .video-menu-container,
+.video-item:active .video-menu-container {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* mobile: always visible */
+@media (max-width: 768px) {
+  .video-menu-container {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+}
+
+/* Small dark frosted circle */
+.video-menu-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  color: white;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: all 0.2s;
+  padding: 0;
+  line-height: 1;
+  letter-spacing: 0;
+
+  &:hover,
+  &:active {
+    background: var(--accent);
+    border-color: var(--accent);
+    transform: scale(1.12);
+  }
+}
+
+/* Horizontal pill sliding left from the button */
+.video-menu-dropdown {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 8px);
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  background: rgba(10, 10, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50px;
+  padding: 5px 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(14px);
+  white-space: nowrap;
+  animation: menuSlideIn 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes menuSlideIn {
+  from { opacity: 0; transform: translateY(-50%) translateX(8px) scale(0.85); }
+  to   { opacity: 1; transform: translateY(-50%) translateX(0)   scale(1);    }
+}
+
+/* Each icon button */
+.video-menu-item {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: white;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.16s;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+
+  &:hover,
+  &:active {
+    background: rgba(99, 102, 241, 0.75);
+    transform: scale(1.18);
+  }
+
+  &.dangerous:hover,
+  &.dangerous:active {
+    background: rgba(239, 68, 68, 0.78);
   }
 }
 
