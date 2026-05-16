@@ -149,6 +149,7 @@ function App() {
    const statusTimerRef = useRef(null)
    const menuRef = useRef(null)
    const uploadAbortControllerRef = useRef(null)
+   const mobileActiveTimerRef = useRef(null)
    const [selectedFile, setSelectedFile] = useState(null)
   const [videos, setVideos] = useState([])
   const [status, setStatus] = useState('')
@@ -169,6 +170,7 @@ function App() {
    const [activeTab, setActiveTab] = useState('all') // 'all' | 'video' | 'image'
    const [openMenuKey, setOpenMenuKey] = useState(null) // Mobile menu state
    const [sortBy, setSortBy] = useState('newest') // 'newest'|'oldest'|'name-az'|'name-za'|'largest'|'smallest'
+   const [mobileActiveKey, setMobileActiveKey] = useState(null)
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -737,6 +739,12 @@ function App() {
     }
   }
 
+  const triggerMobileCardEffect = (key) => {
+    if (mobileActiveTimerRef.current) clearTimeout(mobileActiveTimerRef.current)
+    setMobileActiveKey(key)
+    mobileActiveTimerRef.current = setTimeout(() => setMobileActiveKey(null), 350)
+  }
+
 
   const previewFileType = previewKey ? getFileType(parseObjectKey(previewKey).fileName) : null
 
@@ -877,7 +885,11 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
         ) : (
            <ul className="video-list" ref={menuRef}>
              {filteredVideos.map((video) => (
-               <li key={video.key} className="video-item">
+               <li
+                 key={video.key}
+                 className={`video-item ${mobileActiveKey === video.key ? 'mobile-active' : ''}`}
+                 onTouchStart={() => triggerMobileCardEffect(video.key)}
+               >
                  <input
                    type="checkbox"
                    checked={selectedVideos.has(video.key)}
