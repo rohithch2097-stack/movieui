@@ -257,6 +257,29 @@ pre {
   flex-wrap: wrap;
 }
 
+.video-thumbnail {
+  width: 90px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #2f3b66;
+  flex-shrink: 0;
+  background: #111;
+}
+
+.video-thumbnail-placeholder {
+  width: 90px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid #2f3b66;
+  background: #1a223c;
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+
 .video-info {
   flex: 1;
   min-width: 200px;

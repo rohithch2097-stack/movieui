@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from '@aws-sdk/client-s3'
+import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 // Direct browser upload to Cloudflare R2 (no backend needed)
@@ -49,6 +49,46 @@ const parseObjectKey = (key = '') => {
   }
 }
 
+// Capture a thumbnail frame at ~2s from a video File as a JPEG Blob
+const captureThumbnail = (file) => new Promise((resolve) => {
+  const video = document.createElement('video')
+  const canvas = document.createElement('canvas')
+  const objectUrl = URL.createObjectURL(file)
+
+  const cleanup = () => {
+    URL.revokeObjectURL(objectUrl)
+    video.removeAttribute('src')
+    video.load()
+  }
+
+  video.preload = 'metadata'
+  video.muted = true
+  video.playsInline = true
+
+  video.onloadedmetadata = () => {
+    // Seek to 2s or 10% of duration whichever is smaller
+    video.currentTime = Math.min(2, video.duration * 0.1)
+  }
+
+  video.onseeked = () => {
+    canvas.width = 320
+    canvas.height = Math.round((video.videoHeight / video.videoWidth) * 320) || 180
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    canvas.toBlob((blob) => {
+      cleanup()
+      resolve(blob)
+    }, 'image/jpeg', 0.75)
+  }
+
+  video.onerror = () => {
+    cleanup()
+    resolve(null)
+  }
+
+  video.src = objectUrl
+})
+
 const readFileDurationSeconds = (file) => new Promise((resolve) => {
   const tempVideo = document.createElement('video')
   const objectUrl = URL.createObjectURL(file)
@@ -91,6 +131,7 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false)
   const [videoDurations, setVideoDurations] = useState({})
   const [copiedKey, setCopiedKey] = useState(null)
+  const [thumbnailUrls, setThumbnailUrls] = useState({})
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -121,7 +162,7 @@ function App() {
       const response = await r2Client.send(command)
 
       const videoList = (response.Contents ?? [])
-        .filter((item) => item.Key)
+        .filter((item) => item.Key && !item.Key.startsWith('thumbnails/'))
         .map((item) => {
           const parsed = parseObjectKey(item.Key)
           return {
@@ -146,6 +187,22 @@ function App() {
       if (Object.keys(knownDurations).length > 0) {
         setVideoDurations((prev) => ({ ...prev, ...knownDurations }))
       }
+
+      // Generate signed thumbnail URLs only — browser will naturally hide broken ones via onError
+      // We use setThumbnailUrls with function form so existing valid URLs are preserved
+      const thumbEntries = await Promise.all(
+        videoList.map(async (video) => {
+          try {
+            const thumbKey = `thumbnails/${video.key}.jpg`
+            const url = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: thumbKey }), { expiresIn: 60 * 60 })
+            return [video.key, url]
+          } catch {
+            return [video.key, null]
+          }
+        })
+      )
+      const thumbMap = Object.fromEntries(thumbEntries.filter(([, url]) => url !== null))
+      setThumbnailUrls((prev) => ({ ...prev, ...thumbMap }))
     } catch (error) {
       setStatus(`Failed to load videos: ${error.message}`)
     } finally {
@@ -177,7 +234,9 @@ function App() {
     }
 
     setStatus('Reading video metadata...')
-    const durationSeconds = await readFileDurationSeconds(fileToUpload)
+    const [durationSeconds] = await Promise.all([
+      readFileDurationSeconds(fileToUpload),
+    ])
 
     setIsUploading(true)
     const objectKey = buildObjectKey(fileToUpload.name, durationSeconds)
@@ -259,6 +318,28 @@ function App() {
         fileInputRef.current.value = ''
       }
       setUploadProgress(0)
+
+      // Capture and upload thumbnail BEFORE refreshing the list so it exists in R2 when list loads
+      setStatus('Generating thumbnail...')
+      try {
+        const thumbBlob = await captureThumbnail(fileToUpload)
+        if (thumbBlob) {
+          const thumbKey = `thumbnails/${objectKey}.jpg`
+          const thumbBuffer = await thumbBlob.arrayBuffer()
+          await r2Client.send(new PutObjectCommand({
+            Bucket: bucketName,
+            Key: thumbKey,
+            Body: new Uint8Array(thumbBuffer),
+            ContentType: 'image/jpeg',
+          }))
+          const thumbUrl = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: thumbKey }), { expiresIn: 60 * 60 })
+          setThumbnailUrls((prev) => ({ ...prev, [objectKey]: thumbUrl }))
+        }
+      } catch {
+        // Thumbnail failure is non-critical; continue to load video list
+      }
+      setStatus('')
+
       await fetchVideos()
     } catch (error) {
       // Ensure partial multipart session does not remain if upload fails.
@@ -572,6 +653,21 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   onChange={() => toggleVideoSelection(video.key)}
                   className="video-checkbox"
                 />
+                {thumbnailUrls[video.key] ? (
+                  <img
+                    src={thumbnailUrls[video.key]}
+                    alt={video.fileName}
+                    className="video-thumbnail"
+                    onError={(e) => {
+                      e.target.style.display = 'none'
+                      e.target.nextSibling && (e.target.nextSibling.style.display = 'flex')
+                    }}
+                  />
+                ) : null}
+                <div
+                  className="video-thumbnail-placeholder"
+                  style={{ display: thumbnailUrls[video.key] ? 'none' : 'flex' }}
+                >🎬</div>
                 <div className="video-info">
                   <p className="video-name">{video.fileName}</p>
                   <p className="video-meta">
