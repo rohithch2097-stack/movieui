@@ -1,0 +1,7 @@
+# Cloudflare Wrangler local development secrets
+# This file is for LOCAL development only and should NOT be committed
+# Add your Cloudflare API token here if needed for advanced features
+
+# Example (if you need environment-specific secrets):
+# API_TOKEN=your_cloudflare_api_token_here
+
