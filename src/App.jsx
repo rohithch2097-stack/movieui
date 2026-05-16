@@ -29,6 +29,49 @@ const formatBytes = (bytes = 0) => {
   return `${(bytes / unit ** index).toFixed(2)} ${units[index]}`
 }
 
+const sanitizeFileName = (name = '') => name.replace(/[^a-zA-Z0-9._-]/g, '_')
+
+const buildObjectKey = (fileName, durationSeconds) => `${Date.now()}__dur-${durationSeconds}__${sanitizeFileName(fileName)}`
+
+const parseObjectKey = (key = '') => {
+  const encodedMatch = key.match(/^\d+__dur-(\d+)__(.+)$/)
+  if (encodedMatch) {
+    return {
+      fileName: encodedMatch[2],
+      durationSeconds: Number(encodedMatch[1]),
+    }
+  }
+
+  const legacyName = key.split('-').slice(2).join('-') || key
+  return {
+    fileName: legacyName,
+    durationSeconds: null,
+  }
+}
+
+const readFileDurationSeconds = (file) => new Promise((resolve) => {
+  const tempVideo = document.createElement('video')
+  const objectUrl = URL.createObjectURL(file)
+
+  const cleanup = () => {
+    URL.revokeObjectURL(objectUrl)
+    tempVideo.removeAttribute('src')
+    tempVideo.load()
+  }
+
+  tempVideo.preload = 'metadata'
+  tempVideo.onloadedmetadata = () => {
+    const duration = Number.isFinite(tempVideo.duration) ? Math.max(0, Math.floor(tempVideo.duration)) : 0
+    cleanup()
+    resolve(duration)
+  }
+  tempVideo.onerror = () => {
+    cleanup()
+    resolve(0)
+  }
+  tempVideo.src = objectUrl
+})
+
 function App() {
   const fileInputRef = useRef(null)
   const [selectedFile, setSelectedFile] = useState(null)
@@ -72,16 +115,30 @@ function App() {
 
       const videoList = (response.Contents ?? [])
         .filter((item) => item.Key)
-        .map((item) => ({
-          key: item.Key,
-          fileName: item.Key.split('-').slice(2).join('-'),
-          sizeLabel: formatBytes(item.Size),
-          size: item.Size,
-          lastModified: item.LastModified,
-        }))
+        .map((item) => {
+          const parsed = parseObjectKey(item.Key)
+          return {
+            key: item.Key,
+            fileName: parsed.fileName,
+            durationSeconds: parsed.durationSeconds,
+            sizeLabel: formatBytes(item.Size),
+            size: item.Size,
+            lastModified: item.LastModified,
+          }
+        })
         .sort((a, b) => b.lastModified - a.lastModified) // Sort by newest first
 
       setVideos(videoList)
+
+      const knownDurations = {}
+      videoList.forEach((video) => {
+        if (Number.isFinite(video.durationSeconds) && video.durationSeconds > 0) {
+          knownDurations[video.key] = video.durationSeconds
+        }
+      })
+      if (Object.keys(knownDurations).length > 0) {
+        setVideoDurations((prev) => ({ ...prev, ...knownDurations }))
+      }
     } catch (error) {
       setStatus(`Failed to load videos: ${error.message}`)
     } finally {
@@ -112,8 +169,11 @@ function App() {
       return
     }
 
+    setStatus('Reading video metadata...')
+    const durationSeconds = await readFileDurationSeconds(fileToUpload)
+
     setIsUploading(true)
-    const objectKey = `${Date.now()}-${fileToUpload.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    const objectKey = buildObjectKey(fileToUpload.name, durationSeconds)
     let uploadIdToUse = null
 
     try {
@@ -185,6 +245,9 @@ function App() {
 
       setStatus('✅ Upload completed successfully.')
       setSelectedFile(null)
+      if (durationSeconds > 0) {
+        setVideoDurations((prev) => ({ ...prev, [objectKey]: durationSeconds }))
+      }
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
       }
@@ -248,7 +311,7 @@ function App() {
     setDownloadProgress(0)
 
     try {
-      const downloadName = key.split('-').slice(2).join('-') || key
+      const downloadName = parseObjectKey(key).fileName
       const command = new GetObjectCommand({
         Bucket: bucketName,
         Key: key,
@@ -362,7 +425,6 @@ function App() {
   }
 
   const copyToClipboard = (key) => {
-    const filename = videos.find(v => v.key === key)?.fileName || key
     const link = `${import.meta.env.VITE_R2_ENDPOINT}/${bucketName}/${key}`
     navigator.clipboard.writeText(link)
     setCopiedKey(key)
@@ -507,9 +569,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   <p className="video-name">{video.fileName}</p>
                   <p className="video-meta">
                     {video.sizeLabel}
-                    {videoDurations[video.key] && (
-                      <> • {formatDuration(videoDurations[video.key])}</>
-                    )}
+                    {(video.durationSeconds || videoDurations[video.key])
+                      ? <> • {formatDuration(video.durationSeconds || videoDurations[video.key])}</>
+                      : null}
                   </p>
                 </div>
                 <div className="video-actions">
@@ -556,15 +618,6 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           </div>
         )}
 
-        {/* Hidden video element for duration detection */}
-        {filteredVideos.map(video => (
-          <video
-            key={`duration-${video.key}`}
-            src={previewUrl}
-            onLoadedMetadata={(e) => extractDuration(e, video.key)}
-            style={{ display: 'none' }}
-          />
-        ))}
       </section>
 
       {status ? <p className="status-box">{status}</p> : null}
@@ -581,6 +634,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               controls
               autoPlay
               preload="metadata"
+              onLoadedMetadata={(e) => {
+                if (previewKey) extractDuration(e, previewKey)
+              }}
               className="preview-video"
               style={{ width: '100%', maxHeight: '70vh' }}
             />
