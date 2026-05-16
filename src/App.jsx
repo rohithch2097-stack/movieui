@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from '@aws-sdk/client-s3'
 
 // Direct browser upload to Cloudflare R2 (no backend needed)
 const r2Client = new S3Client({
@@ -13,6 +13,11 @@ const r2Client = new S3Client({
   forcePathStyle: true,
 })
 
+// Multipart chunk settings
+const CHUNK_SIZE = 10 * 1024 * 1024 // 10 MB per chunk
+const MAX_RETRIES = 3
+const RETRY_DELAYS = [1000, 2000, 4000] // ms for retry 1, 2, 3
+
 const bucketName = import.meta.env.VITE_R2_BUCKET_NAME || 'movieui'
 
 const formatBytes = (bytes = 0) => {
@@ -24,6 +29,7 @@ const formatBytes = (bytes = 0) => {
 }
 
 function App() {
+  const fileInputRef = useRef(null)
   const [selectedFile, setSelectedFile] = useState(null)
   const [videos, setVideos] = useState([])
   const [status, setStatus] = useState('')
@@ -41,7 +47,7 @@ function App() {
   const [videoDurations, setVideoDurations] = useState({})
   const [copiedKey, setCopiedKey] = useState(null)
 
-  // Check if R2 credentials are configured
+  // Check if R2 credentials are configured and load any resumed session
   useEffect(() => {
     if (!import.meta.env.VITE_R2_ACCESS_KEY_ID || !import.meta.env.VITE_R2_SECRET_ACCESS_KEY) {
       setConfigError('R2 credentials not configured in .env.local')
@@ -87,8 +93,15 @@ function App() {
     setSelectedFile(nextFile)
   }
 
-  const uploadVideo = async () => {
-    if (!selectedFile) {
+  const onFileInputClick = (event) => {
+    // Allow selecting the same file again without needing a page refresh.
+    event.target.value = ''
+  }
+
+  const uploadVideoMultipart = async () => {
+    const fileToUpload = selectedFile
+
+    if (!fileToUpload) {
       setStatus('Select a video file first.')
       return
     }
@@ -99,44 +112,105 @@ function App() {
     }
 
     setIsUploading(true)
-    setStatus('Uploading to R2...')
-    setUploadProgress(0)
+    const objectKey = `${Date.now()}-${fileToUpload.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    let uploadIdToUse = null
 
     try {
-      // Convert File to ArrayBuffer for AWS SDK
-      const arrayBuffer = await selectedFile.arrayBuffer()
-
-      // Simulate progress during upload (AWS SDK doesn't provide progress events)
-      let progress = 0
-      const progressInterval = setInterval(() => {
-        progress = Math.min(progress + Math.random() * 30, 95)
-        setUploadProgress(Math.floor(progress))
-      }, 200)
-
-      const objectKey = `${Date.now()}-${selectedFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-
-      const command = new PutObjectCommand({
+      const totalParts = Math.ceil(fileToUpload.size / CHUNK_SIZE)
+      setStatus('Initializing multipart upload...')
+      const createCommand = new CreateMultipartUploadCommand({
         Bucket: bucketName,
         Key: objectKey,
-        Body: new Uint8Array(arrayBuffer),
-        ContentType: selectedFile.type || 'video/mp4',
+        ContentType: fileToUpload.type || 'video/mp4',
       })
+      const createResponse = await r2Client.send(createCommand)
+      uploadIdToUse = createResponse.UploadId
 
-      await r2Client.send(command)
-      clearInterval(progressInterval)
-      setUploadProgress(100)
+      // Upload parts
+      const uploadedParts = {}
+      let uploadedBytes = 0
 
-      setStatus('Upload completed successfully.')
+      for (let partNum = 1; partNum <= totalParts; partNum++) {
+        const start = (partNum - 1) * CHUNK_SIZE
+        const end = Math.min(start + CHUNK_SIZE, fileToUpload.size)
+        const partData = fileToUpload.slice(start, end)
+        const partBuffer = await partData.arrayBuffer()
+
+        // Retry logic for part upload
+        let lastError
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            setStatus(`Uploading part ${partNum}/${totalParts} (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`)
+            const uploadCommand = new UploadPartCommand({
+              Bucket: bucketName,
+              Key: objectKey,
+              PartNumber: partNum,
+              UploadId: uploadIdToUse,
+              Body: new Uint8Array(partBuffer),
+            })
+            const uploadResponse = await r2Client.send(uploadCommand)
+            uploadedParts[partNum] = uploadResponse.ETag
+            break
+          } catch (err) {
+            lastError = err
+            if (attempt < MAX_RETRIES) {
+              await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
+            }
+          }
+        }
+
+        if (lastError && !uploadedParts[partNum]) {
+          throw new Error(`Failed to upload part ${partNum} after ${MAX_RETRIES + 1} attempts: ${lastError.message}`)
+        }
+
+        uploadedBytes += (end - start)
+        const progress = Math.round((uploadedBytes / fileToUpload.size) * 100)
+        setUploadProgress(Math.min(progress, 99))
+      }
+
+      // Complete multipart upload
+      setStatus('Finalizing upload...')
+      const sortedParts = Object.entries(uploadedParts)
+        .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
+        .map(([partNum, ETag]) => ({ PartNumber: parseInt(partNum), ETag }))
+
+      const completeCommand = new CompleteMultipartUploadCommand({
+        Bucket: bucketName,
+        Key: objectKey,
+        UploadId: uploadIdToUse,
+        MultipartUpload: { Parts: sortedParts },
+      })
+      await r2Client.send(completeCommand)
+
+      setStatus('✅ Upload completed successfully.')
       setSelectedFile(null)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
       setUploadProgress(0)
       await fetchVideos()
     } catch (error) {
-      setStatus(`Upload failed: ${error.message}`)
+      // Ensure partial multipart session does not remain if upload fails.
+      if (uploadIdToUse) {
+        try {
+          await r2Client.send(new AbortMultipartUploadCommand({
+            Bucket: bucketName,
+            Key: objectKey,
+            UploadId: uploadIdToUse,
+          }))
+        } catch {
+          // Ignore abort errors; primary error is shown below.
+        }
+      }
+
+      setStatus(`Upload failed. Please try again from start. Error: ${error.message}`)
       setUploadProgress(0)
     } finally {
       setIsUploading(false)
     }
   }
+
+  const uploadVideo = () => uploadVideoMultipart()
 
   const previewVideo = async (key) => {
     setIsLoadingPreview(true)
@@ -373,12 +447,15 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           onDrop={handleDrop}
         >
           <p className="drag-drop-text">Drag & drop a video here, or click to select</p>
-          <input type="file" accept="video/*" onChange={onFileChange} disabled={configError} />
+          <input ref={fileInputRef} type="file" accept="video/*" onClick={onFileInputClick} onChange={onFileChange} disabled={configError} />
         </div>
         <p className="file-hint">{selectedFileLabel}</p>
-        <button type="button" onClick={uploadVideo} disabled={isUploading || !selectedFile || configError}>
+
+
+        <button type="button" onClick={uploadVideo} disabled={isUploading || !selectedFile || configError} style={{ marginTop: '10px' }}>
           {isUploading ? 'Uploading...' : 'Upload to R2'}
         </button>
+
         {uploadProgress > 0 && uploadProgress < 100 && (
           <div className="progress-bar">
             <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
