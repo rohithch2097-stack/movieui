@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from '@aws-sdk/client-s3'
+import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, CopyObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 // Direct browser upload to Cloudflare R2 (no backend needed)
@@ -148,6 +148,7 @@ function App() {
    const fileInputRef = useRef(null)
    const statusTimerRef = useRef(null)
    const menuRef = useRef(null)
+   const uploadAbortControllerRef = useRef(null)
    const [selectedFile, setSelectedFile] = useState(null)
   const [videos, setVideos] = useState([])
   const [status, setStatus] = useState('')
@@ -203,6 +204,16 @@ function App() {
     const sizeInMb = (selectedFile.size / (1024 * 1024)).toFixed(2)
     return `${selectedFile.name} (${sizeInMb} MB)`
   }, [selectedFile])
+
+  const storageSummary = useMemo(() => {
+    const totalBytes = videos.reduce((sum, item) => sum + (item.size || 0), 0)
+    return {
+      totalFiles: videos.length,
+      totalBytes,
+      videoCount: videos.filter(v => v.fileType === 'video').length,
+      imageCount: videos.filter(v => v.fileType === 'image').length,
+    }
+  }, [videos])
 
   // Bug fix #3 — paginate through ALL objects (ListObjectsV2 max 1000/page)
   const fetchVideos = async () => {
@@ -284,6 +295,27 @@ function App() {
     event.target.value = ''
   }
 
+  const isAbortError = (error) => {
+    const message = String(error?.message || '').toLowerCase()
+    return error?.name === 'AbortError' || message.includes('abort') || message.includes('aborted')
+  }
+
+  const waitWithAbort = (ms, signal) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort)
+      resolve()
+    }, ms)
+
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener?.('abort', onAbort)
+      reject(new DOMException('Operation aborted', 'AbortError'))
+    }
+
+    if (signal?.aborted) return onAbort()
+    signal?.addEventListener?.('abort', onAbort, { once: true })
+  })
+
   const uploadVideoMultipart = async () => {
     const fileToUpload = selectedFile
 
@@ -304,6 +336,8 @@ function App() {
     const durationSeconds = isImage ? 0 : await readFileDurationSeconds(fileToUpload)
 
     setIsUploading(true)
+    const uploadAbortController = new AbortController()
+    uploadAbortControllerRef.current = uploadAbortController
     const objectKey = buildObjectKey(fileToUpload.name, durationSeconds)
     let uploadIdToUse = null
 
@@ -318,7 +352,7 @@ function App() {
           Key: objectKey,
           Body: new Uint8Array(buffer),
           ContentType: fileToUpload.type || 'image/jpeg',
-        }))
+        }), { abortSignal: uploadAbortController.signal })
         setUploadProgress(100)
       } else {
         // Videos use multipart chunked upload
@@ -329,7 +363,7 @@ function App() {
           Key: objectKey,
           ContentType: fileToUpload.type || 'video/mp4',
         })
-        const createResponse = await r2Client.send(createCommand)
+        const createResponse = await r2Client.send(createCommand, { abortSignal: uploadAbortController.signal })
         uploadIdToUse = createResponse.UploadId
 
         const uploadedParts = {}
@@ -352,13 +386,17 @@ function App() {
                 UploadId: uploadIdToUse,
                 Body: new Uint8Array(partBuffer),
               })
-              const uploadResponse = await r2Client.send(uploadCommand)
+              const uploadResponse = await r2Client.send(uploadCommand, { abortSignal: uploadAbortController.signal })
               uploadedParts[partNum] = uploadResponse.ETag
               break
             } catch (err) {
               lastError = err
+              // On cancel, stop immediately and do not retry.
+              if (isAbortError(err) || uploadAbortController.signal.aborted) {
+                throw err
+              }
               if (attempt < MAX_RETRIES) {
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
+                await waitWithAbort(RETRY_DELAYS[attempt], uploadAbortController.signal)
               }
             }
           }
@@ -381,7 +419,7 @@ function App() {
           Key: objectKey,
           UploadId: uploadIdToUse,
           MultipartUpload: { Parts: sortedParts },
-        }))
+        }), { abortSignal: uploadAbortController.signal })
       }
 
       setTimedStatus('✅ Upload completed successfully.')
@@ -406,7 +444,7 @@ function App() {
             Key: thumbKey,
             Body: new Uint8Array(thumbBuffer),
             ContentType: 'image/jpeg',
-          }))
+          }), { abortSignal: uploadAbortController.signal })
           const thumbUrl = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: thumbKey }), { expiresIn: 60 * 60 })
           setThumbnailUrls((prev) => ({ ...prev, [objectKey]: thumbUrl }))
         }
@@ -415,16 +453,24 @@ function App() {
 
       await fetchVideos()
     } catch (error) {
+      const isAbort = isAbortError(error)
       if (uploadIdToUse) {
         try {
           await r2Client.send(new AbortMultipartUploadCommand({ Bucket: bucketName, Key: objectKey, UploadId: uploadIdToUse }))
         } catch { /* ignore */ }
       }
-      setTimedStatus(`Upload failed: ${error.message}`, 5000)
+      setTimedStatus(isAbort ? 'Upload canceled.' : `Upload failed: ${error.message}`, 5000)
       setUploadProgress(0)
     } finally {
+      uploadAbortControllerRef.current = null
       setIsUploading(false)
     }
+  }
+
+  const cancelUpload = () => {
+    if (!uploadAbortControllerRef.current) return
+    uploadAbortControllerRef.current.abort()
+    setStatus('Canceling upload...')
   }
 
   const uploadVideo = () => uploadVideoMultipart()
@@ -479,9 +525,52 @@ function App() {
     }
   }
 
+  const renameVideo = async (video) => {
+    const currentName = video?.fileName || parseObjectKey(video.key).fileName
+    const nextNameRaw = window.prompt('Enter new file name:', currentName)
+    if (!nextNameRaw) return
+    const nextName = nextNameRaw.trim()
+    if (!nextName || nextName === currentName) return
+
+    const durationToKeep = Number.isFinite(video.durationSeconds) ? video.durationSeconds : (videoDurations[video.key] || 0)
+    const nextKey = buildObjectKey(nextName, durationToKeep)
+    const copySource = `${bucketName}/${encodeURIComponent(video.key).replace(/%2F/g, '/')}`
+
+    setStatus('Renaming file...')
+    try {
+      await r2Client.send(new CopyObjectCommand({
+        Bucket: bucketName,
+        Key: nextKey,
+        CopySource: copySource,
+      }))
+
+      const oldThumbKey = `thumbnails/${video.key}.jpg`
+      const newThumbKey = `thumbnails/${nextKey}.jpg`
+      try {
+        await r2Client.send(new CopyObjectCommand({
+          Bucket: bucketName,
+          Key: newThumbKey,
+          CopySource: `${bucketName}/${encodeURIComponent(oldThumbKey).replace(/%2F/g, '/')}`,
+        }))
+        await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldThumbKey }))
+      } catch {
+        // No thumbnail for this file is okay.
+      }
+
+      await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: video.key }))
+      setTimedStatus('File renamed successfully.')
+      await fetchVideos()
+    } catch (error) {
+      setTimedStatus(`Rename failed: ${error.message}`, 5000)
+    }
+  }
+
   // Bug fix #1 — also delete the orphaned thumbnail from R2
   const deleteVideo = async (key) => {
-    if (!window.confirm(`Delete this file? This action cannot be undone.`)) return
+    const file = videos.find(v => v.key === key)
+    const fileName = file?.fileName || parseObjectKey(key).fileName
+    const fileSize = file?.sizeLabel || ''
+    if (!window.confirm(`Delete "${fileName}"${fileSize ? ` (${fileSize})` : ''}?\nThis action cannot be undone.`)) return
 
     setStatus('Deleting...')
     try {
@@ -517,7 +606,9 @@ function App() {
 
   const bulkDeleteVideos = async () => {
     if (selectedVideos.size === 0) { setStatus('No files selected.'); return }
-    if (!window.confirm(`Delete ${selectedVideos.size} file(s)? This action cannot be undone.`)) return
+    const selectedList = filteredVideos.filter(v => selectedVideos.has(v.key))
+    const totalSize = selectedList.reduce((sum, item) => sum + (item.size || 0), 0)
+    if (!window.confirm(`Delete ${selectedVideos.size} file(s) (${formatBytes(totalSize)})?\nThis action cannot be undone.`)) return
 
     setStatus('Deleting files...')
     try {
@@ -680,9 +771,16 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           <input ref={fileInputRef} type="file" accept="video/*,image/*" onClick={onFileInputClick} onChange={onFileChange} disabled={configError} />
         </div>
         <p className="file-hint">{selectedFileLabel}</p>
+        <div className="upload-actions-row">
         <button type="button" onClick={uploadVideo} disabled={isUploading || !selectedFile || configError} style={{ marginTop: '10px' }}>
           {isUploading ? 'Uploading...' : 'Upload to R2'}
         </button>
+        {isUploading && (
+          <button type="button" className="btn-cancel-upload" onClick={cancelUpload} style={{ marginTop: '10px' }}>
+            Cancel Upload
+          </button>
+        )}
+        </div>
         {uploadProgress > 0 && uploadProgress < 100 && (
           <div className="progress-bar">
             <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
@@ -697,6 +795,13 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           <button type="button" onClick={fetchVideos} disabled={isLoadingVideos || configError}>
             {isLoadingVideos ? 'Refreshing...' : 'Refresh'}
           </button>
+        </div>
+
+        <div className="storage-summary">
+          <span>🗂 {storageSummary.totalFiles} files</span>
+          <span>🎬 {storageSummary.videoCount}</span>
+          <span>🖼️ {storageSummary.imageCount}</span>
+          <span>💾 {formatBytes(storageSummary.totalBytes)} used</span>
         </div>
 
         <div className="tab-bar">
@@ -755,7 +860,17 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           </div>
         )}
 
-        {filteredVideos.length === 0 ? (
+        {isLoadingVideos && videos.length === 0 ? (
+          <ul className="video-list skeleton-list">
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <li key={`skeleton-${idx}`} className="video-item skeleton-card">
+                <div className="skeleton-thumb"></div>
+                <div className="skeleton-line"></div>
+                <div className="skeleton-line short"></div>
+              </li>
+            ))}
+          </ul>
+        ) : filteredVideos.length === 0 ? (
           <p className="empty-state">
             {searchQuery ? 'No files match your search.' : 'No files found in bucket.'}
           </p>
@@ -780,6 +895,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                     >⋯</button>
                     {openMenuKey === video.key && (
                       <div className="video-menu-dropdown">
+                        <button type="button" className="video-menu-item" title="Rename" onClick={() => { renameVideo(video); setOpenMenuKey(null) }}>✏️</button>
                         <button type="button" className="video-menu-item" title="Copy link" onClick={() => { copyToClipboard(video.key); setOpenMenuKey(null) }}>🔗</button>
                         <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
                         <button type="button" className="video-menu-item dangerous" title="Delete" onClick={() => { deleteVideo(video.key); setOpenMenuKey(null) }}>🗑️</button>
