@@ -589,8 +589,10 @@ function App() {
 
   return (
     <main className="app-shell">
-      <h1>Media Vault (Cloudflare R2)</h1>
-      <p className="subtitle">Upload and manage videos & images directly in R2.</p>
+      <div>
+        <h1>🎬 Media Vault</h1>
+        <p className="subtitle">Upload, manage, and share your videos & images securely in the cloud</p>
+      </div>
 
       {configError ? (
         <section className="panel error">
@@ -754,7 +756,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               <img
                 src={previewUrl}
                 alt="preview"
-                style={{ width: '100%', maxHeight: '70vh', objectFit: 'contain', display: 'block', borderRadius: '8px', background: '#000', margin: '1rem' }}
+                style={{ width: '100%', maxHeight: '60vh', objectFit: 'contain', display: 'block', borderRadius: 'var(--radius-md)', background: '#000', margin: 'var(--spacing-xl) 0' }}
               />
             ) : (
               <video
@@ -764,7 +766,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                 preload="metadata"
                 onLoadedMetadata={(e) => { if (previewKey) extractDuration(e, previewKey) }}
                 className="preview-video"
-                style={{ width: '100%', maxHeight: '70vh' }}
+                style={{ width: '100%', maxHeight: '60vh' }}
               />
             )}
             <div className="preview-actions">
