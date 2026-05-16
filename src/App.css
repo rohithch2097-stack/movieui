@@ -265,6 +265,34 @@ pre {
   border: 1px solid #2f3b66;
   flex-shrink: 0;
   background: #111;
+  display: block;
+}
+
+.video-thumbnail-wrap {
+  position: relative;
+  width: 90px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.thumbnail-play-btn {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.35);
+  color: white;
+  font-size: 1.1rem;
+  border-radius: 6px;
+  pointer-events: none;
+  transition: background 0.2s;
+}
+
+.video-item:hover .thumbnail-play-btn {
+  background: rgba(79,124,255,0.55);
 }
 
 .video-thumbnail-placeholder {
@@ -508,6 +536,64 @@ pre {
 
 .search-bar {
   margin: 1rem 0;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.tab-btn {
+  background: #1a223c;
+  border: 1px solid #2f3b66;
+  color: #b6bfd4;
+  border-radius: 8px;
+  padding: 0.4rem 1rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tab-btn:hover {
+  border-color: #4f7cff;
+  color: white;
+}
+
+.tab-btn.active {
+  background: #4f7cff;
+  border-color: #4f7cff;
+  color: white;
+  font-weight: 600;
+}
+
+.file-type-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-right: 4px;
+}
+
+.file-type-badge.video {
+  background: rgba(79,124,255,0.15);
+  color: #4f7cff;
+  border: 1px solid #4f7cff44;
+}
+
+.file-type-badge.image {
+  background: rgba(0,200,83,0.15);
+  color: #00c853;
+  border: 1px solid #00c85344;
+}
+
+.file-type-badge.other {
+  background: rgba(255,152,0,0.15);
+  color: #ff9800;
+  border: 1px solid #ff980044;
 }
 
 .search-bar input {

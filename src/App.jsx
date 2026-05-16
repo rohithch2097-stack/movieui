@@ -21,6 +21,21 @@ const RETRY_DELAYS = [1000, 2000, 4000] // ms for retry 1, 2, 3
 
 const bucketName = import.meta.env.VITE_R2_BUCKET_NAME || 'movieui'
 
+const VIDEO_EXTS = /\.(mp4|mov|avi|mkv|webm|m4v|flv|wmv|3gp)$/i
+const IMAGE_EXTS = /\.(jpg|jpeg|png|gif|webp|bmp|avif|svg)$/i
+
+const getFileType = (fileName = '') => {
+  if (VIDEO_EXTS.test(fileName)) return 'video'
+  if (IMAGE_EXTS.test(fileName)) return 'image'
+  return 'other'
+}
+
+const isSupportedFile = (file) => {
+  if (!file) return false
+  if (file.type.startsWith('video/') || file.type.startsWith('image/')) return true
+  return VIDEO_EXTS.test(file.name) || IMAGE_EXTS.test(file.name)
+}
+
 const formatBytes = (bytes = 0) => {
   if (bytes === 0) return '0 B'
   const unit = 1024
@@ -89,6 +104,23 @@ const captureThumbnail = (file) => new Promise((resolve) => {
   video.src = objectUrl
 })
 
+// For images, resize to 320px wide and return as JPEG blob thumbnail
+const captureImageThumbnail = (file) => new Promise((resolve) => {
+  const img = new Image()
+  const objectUrl = URL.createObjectURL(file)
+  img.onload = () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 320
+    canvas.height = Math.round((img.naturalHeight / img.naturalWidth) * 320) || 180
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    URL.revokeObjectURL(objectUrl)
+    canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.75)
+  }
+  img.onerror = () => { URL.revokeObjectURL(objectUrl); resolve(null) }
+  img.src = objectUrl
+})
+
 const readFileDurationSeconds = (file) => new Promise((resolve) => {
   const tempVideo = document.createElement('video')
   const objectUrl = URL.createObjectURL(file)
@@ -132,6 +164,7 @@ function App() {
   const [videoDurations, setVideoDurations] = useState({})
   const [copiedKey, setCopiedKey] = useState(null)
   const [thumbnailUrls, setThumbnailUrls] = useState({})
+  const [activeTab, setActiveTab] = useState('all') // 'all' | 'video' | 'image'
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -168,6 +201,7 @@ function App() {
           return {
             key: item.Key,
             fileName: parsed.fileName,
+            fileType: getFileType(parsed.fileName),
             durationSeconds: parsed.durationSeconds,
             sizeLabel: formatBytes(item.Size),
             size: item.Size,
@@ -204,7 +238,7 @@ function App() {
       const thumbMap = Object.fromEntries(thumbEntries.filter(([, url]) => url !== null))
       setThumbnailUrls((prev) => ({ ...prev, ...thumbMap }))
     } catch (error) {
-      setStatus(`Failed to load videos: ${error.message}`)
+      setStatus(`Failed to load files: ${error.message}`)
     } finally {
       setIsLoadingVideos(false)
     }
@@ -212,11 +246,14 @@ function App() {
 
   const onFileChange = (event) => {
     const nextFile = event.target.files?.[0] ?? null
+    if (nextFile && !isSupportedFile(nextFile)) {
+      setTimedStatus('Unsupported file type. Please select a video or image.', 4000)
+      return
+    }
     setSelectedFile(nextFile)
   }
 
   const onFileInputClick = (event) => {
-    // Allow selecting the same file again without needing a page refresh.
     event.target.value = ''
   }
 
@@ -224,105 +261,116 @@ function App() {
     const fileToUpload = selectedFile
 
     if (!fileToUpload) {
-      setStatus('Select a video file first.')
+      setStatus('Select a file first.')
       return
     }
 
     if (configError) {
-      setStatus('R2 credentials not configured. Set environment variables in .env.local')
+      setStatus('R2 credentials not configured.')
       return
     }
 
-    setStatus('Reading video metadata...')
-    const [durationSeconds] = await Promise.all([
-      readFileDurationSeconds(fileToUpload),
-    ])
+    const fileType = getFileType(fileToUpload.name) || (fileToUpload.type.startsWith('image/') ? 'image' : 'video')
+    const isImage = fileType === 'image'
+
+    setStatus('Reading file metadata...')
+    const durationSeconds = isImage ? 0 : await readFileDurationSeconds(fileToUpload)
 
     setIsUploading(true)
     const objectKey = buildObjectKey(fileToUpload.name, durationSeconds)
     let uploadIdToUse = null
 
     try {
-      const totalParts = Math.ceil(fileToUpload.size / CHUNK_SIZE)
-      setStatus('Initializing multipart upload...')
-      const createCommand = new CreateMultipartUploadCommand({
-        Bucket: bucketName,
-        Key: objectKey,
-        ContentType: fileToUpload.type || 'video/mp4',
-      })
-      const createResponse = await r2Client.send(createCommand)
-      uploadIdToUse = createResponse.UploadId
+      if (isImage) {
+        // Images are small — single PutObject, no multipart needed
+        setStatus('Uploading image...')
+        const buffer = await fileToUpload.arrayBuffer()
+        setUploadProgress(50)
+        await r2Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: objectKey,
+          Body: new Uint8Array(buffer),
+          ContentType: fileToUpload.type || 'image/jpeg',
+        }))
+        setUploadProgress(100)
+      } else {
+        // Videos use multipart chunked upload
+        const totalParts = Math.ceil(fileToUpload.size / CHUNK_SIZE)
+        setStatus('Initializing multipart upload...')
+        const createCommand = new CreateMultipartUploadCommand({
+          Bucket: bucketName,
+          Key: objectKey,
+          ContentType: fileToUpload.type || 'video/mp4',
+        })
+        const createResponse = await r2Client.send(createCommand)
+        uploadIdToUse = createResponse.UploadId
 
-      // Upload parts
-      const uploadedParts = {}
-      let uploadedBytes = 0
+        const uploadedParts = {}
+        let uploadedBytes = 0
 
-      for (let partNum = 1; partNum <= totalParts; partNum++) {
-        const start = (partNum - 1) * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, fileToUpload.size)
-        const partData = fileToUpload.slice(start, end)
-        const partBuffer = await partData.arrayBuffer()
+        for (let partNum = 1; partNum <= totalParts; partNum++) {
+          const start = (partNum - 1) * CHUNK_SIZE
+          const end = Math.min(start + CHUNK_SIZE, fileToUpload.size)
+          const partData = fileToUpload.slice(start, end)
+          const partBuffer = await partData.arrayBuffer()
 
-        // Retry logic for part upload
-        let lastError
-        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-          try {
-            setStatus(`Uploading part ${partNum}/${totalParts} (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`)
-            const uploadCommand = new UploadPartCommand({
-              Bucket: bucketName,
-              Key: objectKey,
-              PartNumber: partNum,
-              UploadId: uploadIdToUse,
-              Body: new Uint8Array(partBuffer),
-            })
-            const uploadResponse = await r2Client.send(uploadCommand)
-            uploadedParts[partNum] = uploadResponse.ETag
-            break
-          } catch (err) {
-            lastError = err
-            if (attempt < MAX_RETRIES) {
-              await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
+          let lastError
+          for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+              setStatus(`Uploading part ${partNum}/${totalParts} (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`)
+              const uploadCommand = new UploadPartCommand({
+                Bucket: bucketName,
+                Key: objectKey,
+                PartNumber: partNum,
+                UploadId: uploadIdToUse,
+                Body: new Uint8Array(partBuffer),
+              })
+              const uploadResponse = await r2Client.send(uploadCommand)
+              uploadedParts[partNum] = uploadResponse.ETag
+              break
+            } catch (err) {
+              lastError = err
+              if (attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt]))
+              }
             }
           }
+
+          if (lastError && !uploadedParts[partNum]) {
+            throw new Error(`Failed to upload part ${partNum} after ${MAX_RETRIES + 1} attempts: ${lastError.message}`)
+          }
+
+          uploadedBytes += (end - start)
+          setUploadProgress(Math.min(Math.round((uploadedBytes / fileToUpload.size) * 100), 99))
         }
 
-        if (lastError && !uploadedParts[partNum]) {
-          throw new Error(`Failed to upload part ${partNum} after ${MAX_RETRIES + 1} attempts: ${lastError.message}`)
-        }
+        setStatus('Finalizing upload...')
+        const sortedParts = Object.entries(uploadedParts)
+          .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
+          .map(([partNum, ETag]) => ({ PartNumber: parseInt(partNum), ETag }))
 
-        uploadedBytes += (end - start)
-        const progress = Math.round((uploadedBytes / fileToUpload.size) * 100)
-        setUploadProgress(Math.min(progress, 99))
+        await r2Client.send(new CompleteMultipartUploadCommand({
+          Bucket: bucketName,
+          Key: objectKey,
+          UploadId: uploadIdToUse,
+          MultipartUpload: { Parts: sortedParts },
+        }))
       }
-
-      // Complete multipart upload
-      setStatus('Finalizing upload...')
-      const sortedParts = Object.entries(uploadedParts)
-        .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
-        .map(([partNum, ETag]) => ({ PartNumber: parseInt(partNum), ETag }))
-
-      const completeCommand = new CompleteMultipartUploadCommand({
-        Bucket: bucketName,
-        Key: objectKey,
-        UploadId: uploadIdToUse,
-        MultipartUpload: { Parts: sortedParts },
-      })
-      await r2Client.send(completeCommand)
 
       setTimedStatus('✅ Upload completed successfully.')
       setSelectedFile(null)
       if (durationSeconds > 0) {
         setVideoDurations((prev) => ({ ...prev, [objectKey]: durationSeconds }))
       }
-      if (fileInputRef.current) {
-        fileInputRef.current.value = ''
-      }
+      if (fileInputRef.current) fileInputRef.current.value = ''
       setUploadProgress(0)
 
-      // Capture and upload thumbnail BEFORE refreshing the list so it exists in R2 when list loads
+      // Generate and upload thumbnail
       setStatus('Generating thumbnail...')
       try {
-        const thumbBlob = await captureThumbnail(fileToUpload)
+        const thumbBlob = isImage
+          ? await captureImageThumbnail(fileToUpload)
+          : await captureThumbnail(fileToUpload)
         if (thumbBlob) {
           const thumbKey = `thumbnails/${objectKey}.jpg`
           const thumbBuffer = await thumbBlob.arrayBuffer()
@@ -335,27 +383,17 @@ function App() {
           const thumbUrl = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: thumbKey }), { expiresIn: 60 * 60 })
           setThumbnailUrls((prev) => ({ ...prev, [objectKey]: thumbUrl }))
         }
-      } catch {
-        // Thumbnail failure is non-critical; continue to load video list
-      }
+      } catch { /* thumbnail failure is non-critical */ }
       setStatus('')
 
       await fetchVideos()
     } catch (error) {
-      // Ensure partial multipart session does not remain if upload fails.
       if (uploadIdToUse) {
         try {
-          await r2Client.send(new AbortMultipartUploadCommand({
-            Bucket: bucketName,
-            Key: objectKey,
-            UploadId: uploadIdToUse,
-          }))
-        } catch {
-          // Ignore abort errors; primary error is shown below.
-        }
+          await r2Client.send(new AbortMultipartUploadCommand({ Bucket: bucketName, Key: objectKey, UploadId: uploadIdToUse }))
+        } catch { /* ignore */ }
       }
-
-      setTimedStatus(`Upload failed. Please try again from start. Error: ${error.message}`, 5000)
+      setTimedStatus(`Upload failed: ${error.message}`, 5000)
       setUploadProgress(0)
     } finally {
       setIsUploading(false)
@@ -368,14 +406,7 @@ function App() {
     setIsLoadingPreview(true)
     setStatus('Loading preview...')
     try {
-      const command = new GetObjectCommand({
-        Bucket: bucketName,
-        Key: key,
-      })
-
-      // Stream preview directly from R2 with a short-lived signed URL.
-      const url = await getSignedUrl(r2Client, command, { expiresIn: 60 * 10 })
-
+      const url = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: key }), { expiresIn: 60 * 10 })
       setPreviewKey(key)
       setPreviewUrl(url)
       setTimedStatus('Preview ready.')
@@ -387,9 +418,7 @@ function App() {
   }
 
   const closePreview = () => {
-    if (previewUrl && previewUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(previewUrl)
-    }
+    if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl)
     setPreviewKey(null)
     setPreviewUrl(null)
   }
@@ -536,12 +565,11 @@ function App() {
     e.preventDefault()
     e.stopPropagation()
     setIsDragOver(false)
-
     const files = e.dataTransfer.files
     if (files.length > 0) {
       const file = files[0]
-      if (!file.type.startsWith('video/')) {
-        setStatus('Please drop a video file.')
+      if (!isSupportedFile(file)) {
+        setTimedStatus('Unsupported file type. Please drop a video or image.', 4000)
         return
       }
       setSelectedFile(file)
@@ -550,16 +578,19 @@ function App() {
   }
 
   const filteredVideos = useMemo(() => {
-    if (!searchQuery.trim()) return videos
-    return videos.filter(v =>
-      v.fileName.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  }, [videos, searchQuery])
+    let list = videos
+    if (activeTab === 'video') list = list.filter(v => v.fileType === 'video')
+    else if (activeTab === 'image') list = list.filter(v => v.fileType === 'image')
+    if (!searchQuery.trim()) return list
+    return list.filter(v => v.fileName.toLowerCase().includes(searchQuery.toLowerCase()))
+  }, [videos, searchQuery, activeTab])
+
+  const previewFileType = previewKey ? getFileType(parseObjectKey(previewKey).fileName) : null
 
   return (
     <main className="app-shell">
-      <h1>Video Vault (Cloudflare R2)</h1>
-      <p className="subtitle">Upload and download videos directly to R2 (no backend required).</p>
+      <h1>Media Vault (Cloudflare R2)</h1>
+      <p className="subtitle">Upload and manage videos & images directly in R2.</p>
 
       {configError ? (
         <section className="panel error">
@@ -574,23 +605,20 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
       ) : null}
 
       <section className="panel">
-        <h2>Upload Video</h2>
+        <h2>Upload File</h2>
         <div
           className={`drag-drop-area ${isDragOver ? 'drag-over' : ''}`}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          <p className="drag-drop-text">Drag & drop a video here, or click to select</p>
-          <input ref={fileInputRef} type="file" accept="video/*" onClick={onFileInputClick} onChange={onFileChange} disabled={configError} />
+          <p className="drag-drop-text">Drag & drop a video or image here, or click to select</p>
+          <input ref={fileInputRef} type="file" accept="video/*,image/*" onClick={onFileInputClick} onChange={onFileChange} disabled={configError} />
         </div>
         <p className="file-hint">{selectedFileLabel}</p>
-
-
         <button type="button" onClick={uploadVideo} disabled={isUploading || !selectedFile || configError} style={{ marginTop: '10px' }}>
           {isUploading ? 'Uploading...' : 'Upload to R2'}
         </button>
-
         {uploadProgress > 0 && uploadProgress < 100 && (
           <div className="progress-bar">
             <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
@@ -601,16 +629,29 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
 
       <section className="panel">
         <div className="videos-header">
-          <h2>Available Videos</h2>
+          <h2>Files</h2>
           <button type="button" onClick={fetchVideos} disabled={isLoadingVideos || configError}>
             {isLoadingVideos ? 'Refreshing...' : 'Refresh'}
           </button>
         </div>
 
+        <div className="tab-bar">
+          {['all', 'video', 'image'].map(tab => (
+            <button
+              key={tab}
+              type="button"
+              className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab === 'all' ? '🗂 All' : tab === 'video' ? '🎬 Videos' : '🖼️ Images'}
+            </button>
+          ))}
+        </div>
+
         <div className="search-bar">
           <input
             type="text"
-            placeholder="🔍 Search videos by name..."
+            placeholder="🔍 Search by name..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             disabled={configError}
@@ -628,11 +669,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               Select All ({selectedVideos.size}/{filteredVideos.length})
             </label>
             {selectedVideos.size > 0 && (
-              <button
-                type="button"
-                onClick={bulkDeleteVideos}
-                className="btn-bulk-delete"
-              >
+              <button type="button" onClick={bulkDeleteVideos} className="btn-bulk-delete">
                 🗑️ Delete {selectedVideos.size} Selected
               </button>
             )}
@@ -641,7 +678,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
 
         {filteredVideos.length === 0 ? (
           <p className="empty-state">
-            {searchQuery ? 'No videos match your search.' : 'No videos found in bucket.'}
+            {searchQuery ? 'No files match your search.' : 'No files found in bucket.'}
           </p>
         ) : (
           <ul className="video-list">
@@ -654,60 +691,42 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   className="video-checkbox"
                 />
                 {thumbnailUrls[video.key] ? (
-                  <img
-                    src={thumbnailUrls[video.key]}
-                    alt={video.fileName}
-                    className="video-thumbnail"
-                    onError={(e) => {
-                      e.target.style.display = 'none'
-                      e.target.nextSibling && (e.target.nextSibling.style.display = 'flex')
-                    }}
-                  />
+                  <div className="video-thumbnail-wrap">
+                    <img
+                      src={thumbnailUrls[video.key]}
+                      alt={video.fileName}
+                      className="video-thumbnail"
+                      onError={(e) => {
+                        e.target.parentElement.style.display = 'none'
+                        e.target.parentElement.nextSibling && (e.target.parentElement.nextSibling.style.display = 'flex')
+                      }}
+                    />
+                    {video.fileType === 'video' && (
+                      <div className="thumbnail-play-btn" aria-hidden="true">▶</div>
+                    )}
+                  </div>
                 ) : null}
                 <div
                   className="video-thumbnail-placeholder"
                   style={{ display: thumbnailUrls[video.key] ? 'none' : 'flex' }}
-                >🎬</div>
+                >{video.fileType === 'image' ? '🖼️' : '🎬'}</div>
                 <div className="video-info">
                   <p className="video-name">{video.fileName}</p>
                   <p className="video-meta">
-                    {video.sizeLabel}
+                    <span className={`file-type-badge ${video.fileType}`}>{video.fileType}</span>
+                    {' '}{video.sizeLabel}
                     {(video.durationSeconds || videoDurations[video.key])
                       ? <> • {formatDuration(video.durationSeconds || videoDurations[video.key])}</>
                       : null}
                   </p>
                 </div>
                 <div className="video-actions">
-                  <button
-                    type="button"
-                    onClick={() => previewVideo(video.key)}
-                    disabled={isLoadingPreview}
-                    className="btn-preview"
-                  >
-                    👁️
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(video.key)}
-                    className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`}
-                    title="Copy shareable link"
-                  >
+                  <button type="button" onClick={() => previewVideo(video.key)} disabled={isLoadingPreview} className="btn-preview">👁️</button>
+                  <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">
                     {copiedKey === video.key ? '✓' : '🔗'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => downloadVideo(video.key)}
-                    className="btn-download"
-                  >
-                    ⬇️
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteVideo(video.key)}
-                    className="btn-delete"
-                  >
-                    🗑️
-                  </button>
+                  <button type="button" onClick={() => downloadVideo(video.key)} className="btn-download">⬇️</button>
+                  <button type="button" onClick={() => deleteVideo(video.key)} className="btn-delete">🗑️</button>
                 </div>
               </li>
             ))}
@@ -720,7 +739,6 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
             <span className="progress-text">{downloadProgress}%</span>
           </div>
         )}
-
       </section>
 
       {status ? <p className="status-box">{status}</p> : null}
@@ -729,27 +747,31 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
         <div className="preview-modal-overlay" onClick={closePreview}>
           <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
             <div className="preview-header">
-              <h3>Video Preview</h3>
+              <h3>{previewFileType === 'image' ? 'Image Preview' : 'Video Preview'}</h3>
               <button className="close-btn" onClick={closePreview}>✕</button>
             </div>
-            <video
-              src={previewUrl}
-              controls
-              autoPlay
-              preload="metadata"
-              onLoadedMetadata={(e) => {
-                if (previewKey) extractDuration(e, previewKey)
-              }}
-              className="preview-video"
-              style={{ width: '100%', maxHeight: '70vh' }}
-            />
+            {previewFileType === 'image' ? (
+              <img
+                src={previewUrl}
+                alt="preview"
+                style={{ width: '100%', maxHeight: '70vh', objectFit: 'contain', display: 'block', borderRadius: '8px', background: '#000', margin: '1rem' }}
+              />
+            ) : (
+              <video
+                src={previewUrl}
+                controls
+                autoPlay
+                preload="metadata"
+                onLoadedMetadata={(e) => { if (previewKey) extractDuration(e, previewKey) }}
+                className="preview-video"
+                style={{ width: '100%', maxHeight: '70vh' }}
+              />
+            )}
             <div className="preview-actions">
               <button onClick={() => downloadVideo(previewKey)} className="btn-download-from-preview">
-                ⬇️ Download This Video
+                ⬇️ Download
               </button>
-              <button onClick={closePreview} className="btn-close-preview">
-                Close
-              </button>
+              <button onClick={closePreview} className="btn-close-preview">Close</button>
             </div>
           </div>
         </div>
