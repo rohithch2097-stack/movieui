@@ -18,6 +18,7 @@ const r2Client = new S3Client({
 const CHUNK_SIZE = 10 * 1024 * 1024 // 10 MB per chunk
 const MAX_RETRIES = 3
 const RETRY_DELAYS = [1000, 2000, 4000] // ms for retry 1, 2, 3
+const LONG_PRESS_MS = 450
 
 const bucketName = import.meta.env.VITE_R2_BUCKET_NAME || 'movieui'
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
@@ -171,6 +172,8 @@ function App() {
    const menuRef = useRef(null)
    const uploadAbortControllerRef = useRef(null)
    const mobileActiveTimerRef = useRef(null)
+   const selectionLongPressTimerRef = useRef(null)
+   const selectionLongPressHandledRef = useRef(false)
    const [selectedFile, setSelectedFile] = useState(null)
   const [videos, setVideos] = useState([])
   const [status, setStatus] = useState('')
@@ -184,6 +187,7 @@ function App() {
   const [isLoadingPreview, setIsLoadingPreview] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedVideos, setSelectedVideos] = useState(new Set())
+  const [isSelectionMode, setIsSelectionMode] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
    const [videoDurations, setVideoDurations] = useState({})
    const [copiedKey, setCopiedKey] = useState(null)
@@ -231,6 +235,10 @@ function App() {
        return () => document.removeEventListener('click', handleClickOutside)
      }
    }, [openMenuKey])
+
+  useEffect(() => () => {
+    if (selectionLongPressTimerRef.current) clearTimeout(selectionLongPressTimerRef.current)
+  }, [])
 
   const selectedFileLabel = useMemo(() => {
     if (!selectedFile) return 'No file selected'
@@ -742,6 +750,46 @@ function App() {
     setSelectedVideos(newSelected)
   }
 
+  const exitSelectionMode = () => {
+    setIsSelectionMode(false)
+    setSelectedVideos(new Set())
+  }
+
+  const clearSelectionLongPressTimer = () => {
+    if (selectionLongPressTimerRef.current) {
+      clearTimeout(selectionLongPressTimerRef.current)
+      selectionLongPressTimerRef.current = null
+    }
+  }
+
+  const startSelectionLongPress = (event, key) => {
+    if (isSelectionMode) return
+    if (event.target.closest('button, input, textarea, select, a, video')) return
+    clearSelectionLongPressTimer()
+    selectionLongPressHandledRef.current = false
+    selectionLongPressTimerRef.current = setTimeout(() => {
+      selectionLongPressHandledRef.current = true
+      setIsSelectionMode(true)
+      setSelectedVideos(new Set([key]))
+      setOpenMenuKey(null)
+      setTimedStatus('Selection mode enabled.')
+    }, LONG_PRESS_MS)
+  }
+
+  const endSelectionLongPress = () => {
+    clearSelectionLongPressTimer()
+  }
+
+  const handleCardClick = (event, key) => {
+    if (!isSelectionMode) return
+    if (event.target.closest('button, input, textarea, select, a, video')) return
+    if (selectionLongPressHandledRef.current) {
+      selectionLongPressHandledRef.current = false
+      return
+    }
+    toggleVideoSelection(key)
+  }
+
   const toggleSelectAll = () => {
     if (selectedVideos.size === filteredVideos.length) {
       setSelectedVideos(new Set())
@@ -1081,7 +1129,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           </select>
         </div>
 
-        {filteredVideos.length > 0 && (
+        {filteredVideos.length > 0 && isSelectionMode && (
           <div className="bulk-actions">
             <label className="checkbox-label">
               <input
@@ -1091,6 +1139,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               />
               Select All ({selectedVideos.size}/{filteredVideos.length})
             </label>
+            <button type="button" onClick={exitSelectionMode}>
+              Done
+            </button>
             {selectedVideos.size > 0 && (
               <button type="button" onClick={bulkDeleteVideos} className="btn-bulk-delete">
                 🗑️ Delete {selectedVideos.size} Selected
@@ -1119,14 +1170,22 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                <li
                  key={video.key}
                  className={`video-item ${mobileActiveKey === video.key ? 'mobile-active' : ''}`}
-                 onTouchStart={() => triggerMobileCardEffect(video.key)}
+                 onClick={(event) => handleCardClick(event, video.key)}
+                 onTouchStart={(event) => {
+                   triggerMobileCardEffect(video.key)
+                   startSelectionLongPress(event, video.key)
+                 }}
+                 onTouchEnd={endSelectionLongPress}
+                 onTouchCancel={endSelectionLongPress}
                >
-                 <input
-                   type="checkbox"
-                   checked={selectedVideos.has(video.key)}
-                   onChange={() => toggleVideoSelection(video.key)}
-                   className="video-checkbox"
-                 />
+                 {isSelectionMode ? (
+                   <input
+                     type="checkbox"
+                     checked={selectedVideos.has(video.key)}
+                     onChange={() => toggleVideoSelection(video.key)}
+                     className="video-checkbox"
+                   />
+                 ) : null}
 
                   {/* 3-dot menu — absolute positioned on card, visually overlays top-right of thumbnail */}
                   <div className="video-menu-container">
@@ -1156,7 +1215,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   {thumbnailUrls[video.key] ? (
                     <div
                       className="video-thumbnail-wrap"
-                      onClick={() => previewVideo(video.key)}
+                      onClick={() => (isSelectionMode ? toggleVideoSelection(video.key) : previewVideo(video.key))}
                       style={{ cursor: 'pointer' }}
                     >
                       <img
@@ -1176,7 +1235,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   <div
                     className="video-thumbnail-placeholder"
                     style={{ display: thumbnailUrls[video.key] ? 'none' : 'flex', cursor: 'pointer' }}
-                    onClick={() => previewVideo(video.key)}
+                    onClick={() => (isSelectionMode ? toggleVideoSelection(video.key) : previewVideo(video.key))}
                   >{video.fileType === 'image' ? '🖼️' : '🎬'}</div>
 
                   <div className="video-info">
