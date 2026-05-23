@@ -668,6 +668,12 @@ function App() {
   }
 
   const renameVideo = async (video) => {
+    const ownerId = ownershipByKey[video.key]
+    if (ownerId && ownerId !== uploadDeviceIdRef.current) {
+      setTimedStatus('❌ You can only rename files you uploaded.', 5000)
+      return
+    }
+
     const currentName = video?.fileName || parseObjectKey(video.key).fileName
     const nextNameRaw = window.prompt('Enter new file name:', currentName)
     if (!nextNameRaw) return
@@ -688,6 +694,8 @@ function App() {
 
       const oldThumbKey = `thumbnails/${video.key}.jpg`
       const newThumbKey = `thumbnails/${nextKey}.jpg`
+      const oldOwnerKey = `__owners__/${encodeURIComponent(video.key)}.json`
+      const newOwnerKey = `__owners__/${encodeURIComponent(nextKey)}.json`
       try {
         await r2Client.send(new CopyObjectCommand({
           Bucket: bucketName,
@@ -697,6 +705,17 @@ function App() {
         await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldThumbKey }))
       } catch {
         // No thumbnail for this file is okay.
+      }
+
+      try {
+        await r2Client.send(new CopyObjectCommand({
+          Bucket: bucketName,
+          Key: newOwnerKey,
+          CopySource: `${bucketName}/${encodeURIComponent(oldOwnerKey).replace(/%2F/g, '/')}`,
+        }))
+        await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: oldOwnerKey }))
+      } catch {
+        // No ownership record for legacy files is okay.
       }
 
       await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: video.key }))
@@ -1197,7 +1216,13 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                     >⋯</button>
                      {openMenuKey === video.key && (
                        <div className="video-menu-dropdown">
-                         <button type="button" className="video-menu-item" title="Rename" onClick={() => { renameVideo(video); setOpenMenuKey(null) }}>✏️</button>
+                         <button
+                           type="button"
+                           className={`video-menu-item ${ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
+                           title={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can rename' : 'Rename'}
+                           onClick={() => { renameVideo(video); setOpenMenuKey(null) }}
+                           disabled={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
+                         >✏️</button>
                          <button type="button" className="video-menu-item" title="Copy link" onClick={() => { copyToClipboard(video.key); setOpenMenuKey(null) }}>🔗</button>
                          <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
                          <button
