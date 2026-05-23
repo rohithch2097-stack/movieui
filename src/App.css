@@ -1047,6 +1047,25 @@ button[type="submit"] {
   &:hover:not(:disabled) {
     box-shadow: 0 8px 16px rgba(239, 68, 68, 0.3);
   }
+
+  &.disabled,
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.4) 0%, rgba(220, 38, 38, 0.4) 100%);
+  }
+}
+
+.video-menu-item.disabled,
+.video-menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+
+  &:hover,
+  &:active {
+    background: transparent;
+    transform: scale(1);
+  }
 }
 
 /* ============================================

@@ -22,6 +22,7 @@ const RETRY_DELAYS = [1000, 2000, 4000] // ms for retry 1, 2, 3
 const bucketName = import.meta.env.VITE_R2_BUCKET_NAME || 'movieui'
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const LIKE_DEVICE_ID_STORAGE_KEY = 'movieui_like_device_id'
+const UPLOAD_DEVICE_ID_STORAGE_KEY = 'movieui_upload_device_id'
 
 const VIDEO_EXTS = /\.(mp4|mov|avi|mkv|webm|m4v|flv|wmv|3gp)$/i
 const IMAGE_EXTS = /\.(jpg|jpeg|png|gif|webp|bmp|avif|svg)$/i
@@ -57,6 +58,14 @@ const getOrCreateLikeDeviceId = () => {
   if (existing) return existing
   const nextId = (window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^a-zA-Z0-9_-]/g, '')
   window.localStorage.setItem(LIKE_DEVICE_ID_STORAGE_KEY, nextId)
+  return nextId
+}
+
+const getOrCreateUploadDeviceId = () => {
+  const existing = window.localStorage.getItem(UPLOAD_DEVICE_ID_STORAGE_KEY)
+  if (existing) return existing
+  const nextId = (window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^a-zA-Z0-9_-]/g, '')
+  window.localStorage.setItem(UPLOAD_DEVICE_ID_STORAGE_KEY, nextId)
   return nextId
 }
 
@@ -188,7 +197,9 @@ function App() {
    const [pendingLikeKeys, setPendingLikeKeys] = useState(new Set())
    const [likesSyncError, setLikesSyncError] = useState('')
    const [shareModalUrl, setShareModalUrl] = useState(null)
+   const [ownershipByKey, setOwnershipByKey] = useState({})
    const likeDeviceIdRef = useRef('')
+   const uploadDeviceIdRef = useRef('')
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -196,15 +207,16 @@ function App() {
     statusTimerRef.current = setTimeout(() => setStatus(''), delay)
   }
 
-   // Check if R2 credentials are configured and load any resumed session
-   useEffect(() => {
-     likeDeviceIdRef.current = getOrCreateLikeDeviceId()
-     if (!import.meta.env.VITE_R2_ACCESS_KEY_ID || !import.meta.env.VITE_R2_SECRET_ACCESS_KEY) {
-       setConfigError('R2 credentials not configured in .env.local')
-     } else {
-       fetchVideos()
-     }
-   }, [])
+    // Check if R2 credentials are configured and load any resumed session
+    useEffect(() => {
+      likeDeviceIdRef.current = getOrCreateLikeDeviceId()
+      uploadDeviceIdRef.current = getOrCreateUploadDeviceId()
+      if (!import.meta.env.VITE_R2_ACCESS_KEY_ID || !import.meta.env.VITE_R2_SECRET_ACCESS_KEY) {
+        setConfigError('R2 credentials not configured in .env.local')
+      } else {
+        fetchVideos()
+      }
+    }, [])
 
    // Close menu when clicking outside
    useEffect(() => {
@@ -268,8 +280,38 @@ function App() {
     } finally {
       setIsSyncingLikes(false)
     }
-  }
+   }
 
+
+   const fetchOwnershipForKeys = async (keys) => {
+     if (!keys.length) {
+       setOwnershipByKey({})
+       return
+     }
+
+     try {
+       const ownershipMap = {}
+       for (const key of keys) {
+         try {
+           const ownerKey = `__owners__/${encodeURIComponent(key)}.json`
+           const response = await r2Client.send(new GetObjectCommand({
+             Bucket: bucketName,
+             Key: ownerKey,
+           }))
+           const text = await response.Body.transformToString()
+           const ownerData = JSON.parse(text)
+           ownershipMap[key] = ownerData.deviceId
+         } catch {
+           // No ownership record means pre-existing file or upload without ownership tracking
+           ownershipMap[key] = null
+         }
+       }
+       setOwnershipByKey(ownershipMap)
+     } catch (error) {
+       // Non-critical — continue without ownership info
+       console.error('Failed to fetch ownership info:', error)
+     }
+   }
 
   // Bug fix #3 — paginate through ALL objects (ListObjectsV2 max 1000/page)
   const fetchVideos = async () => {
@@ -288,24 +330,25 @@ function App() {
         continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined
       } while (continuationToken)
 
-      const videoList = allItems
-        .filter((item) => item.Key && !item.Key.startsWith('thumbnails/') && !item.Key.startsWith('__likes__/'))
-        .map((item) => {
-          const parsed = parseObjectKey(item.Key)
-          return {
-            key: item.Key,
-            fileName: parsed.fileName,
-            fileType: getFileType(parsed.fileName),
-            durationSeconds: parsed.durationSeconds,
-            sizeLabel: formatBytes(item.Size),
-            size: item.Size,
-            lastModified: item.LastModified,
-          }
-        })
-        .sort((a, b) => b.lastModified - a.lastModified)
+       const videoList = allItems
+         .filter((item) => item.Key && !item.Key.startsWith('thumbnails/') && !item.Key.startsWith('__likes__/') && !item.Key.startsWith('__owners__/'))
+         .map((item) => {
+           const parsed = parseObjectKey(item.Key)
+           return {
+             key: item.Key,
+             fileName: parsed.fileName,
+             fileType: getFileType(parsed.fileName),
+             durationSeconds: parsed.durationSeconds,
+             sizeLabel: formatBytes(item.Size),
+             size: item.Size,
+             lastModified: item.LastModified,
+           }
+         })
+         .sort((a, b) => b.lastModified - a.lastModified)
 
-      setVideos(videoList)
-      await fetchLikesForKeys(videoList.map((video) => video.key))
+       setVideos(videoList)
+       await fetchLikesForKeys(videoList.map((video) => video.key))
+       await fetchOwnershipForKeys(videoList.map((video) => video.key))
 
       const knownDurations = {}
       videoList.forEach((video) => {
@@ -521,10 +564,28 @@ function App() {
           const thumbUrl = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: thumbKey }), { expiresIn: 60 * 60 })
           setThumbnailUrls((prev) => ({ ...prev, [objectKey]: thumbUrl }))
         }
-      } catch { /* thumbnail failure is non-critical */ }
-      setStatus('')
+       } catch { /* thumbnail failure is non-critical */ }
+       setStatus('')
 
-      await fetchVideos()
+       // Store ownership info
+       try {
+         const ownerKey = `__owners__/${encodeURIComponent(objectKey)}.json`
+         const ownerData = JSON.stringify({
+           deviceId: uploadDeviceIdRef.current,
+           uploadedAt: new Date().toISOString(),
+         })
+         await r2Client.send(new PutObjectCommand({
+           Bucket: bucketName,
+           Key: ownerKey,
+           Body: new TextEncoder().encode(ownerData),
+           ContentType: 'application/json',
+         }), { abortSignal: uploadAbortController.signal })
+       } catch (error) {
+         console.error('Failed to store ownership info:', error)
+         // Non-critical — continue
+       }
+
+       await fetchVideos()
     } catch (error) {
       const isAbort = isAbortError(error)
       if (uploadIdToUse) {
@@ -638,27 +699,38 @@ function App() {
     }
   }
 
-  // Bug fix #1 — also delete the orphaned thumbnail from R2
-  const deleteVideo = async (key) => {
-    const file = videos.find(v => v.key === key)
-    const fileName = file?.fileName || parseObjectKey(key).fileName
-    const fileSize = file?.sizeLabel || ''
-    if (!window.confirm(`Delete "${fileName}"${fileSize ? ` (${fileSize})` : ''}?\nThis action cannot be undone.`)) return
+   // Bug fix #1 — also delete the orphaned thumbnail from R2
+   const deleteVideo = async (key) => {
+     // Check ownership
+     const ownerId = ownershipByKey[key]
+     if (ownerId && ownerId !== uploadDeviceIdRef.current) {
+       setTimedStatus('❌ You can only delete files you uploaded.', 5000)
+       return
+     }
 
-    setStatus('Deleting...')
-    try {
-      await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }))
-      try {
-        await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
-      } catch { /* thumbnail may not exist — ignore */ }
-      setThumbnailUrls(prev => { const n = { ...prev }; delete n[key]; return n })
-      setLikesByKey((prev) => { const next = { ...prev }; delete next[key]; return next })
-      setTimedStatus('File deleted successfully.')
-      await fetchVideos()
-    } catch (error) {
-      setTimedStatus(`Delete failed: ${error.message}`, 5000)
-    }
-  }
+     const file = videos.find(v => v.key === key)
+     const fileName = file?.fileName || parseObjectKey(key).fileName
+     const fileSize = file?.sizeLabel || ''
+     if (!window.confirm(`Delete "${fileName}"${fileSize ? ` (${fileSize})` : ''}?\nThis action cannot be undone.`)) return
+
+     setStatus('Deleting...')
+     try {
+       await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }))
+       try {
+         await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
+       } catch { /* thumbnail may not exist — ignore */ }
+       try {
+         await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `__owners__/${encodeURIComponent(key)}.json` }))
+       } catch { /* ownership record may not exist — ignore */ }
+       setThumbnailUrls(prev => { const n = { ...prev }; delete n[key]; return n })
+       setLikesByKey((prev) => { const next = { ...prev }; delete next[key]; return next })
+       setOwnershipByKey((prev) => { const next = { ...prev }; delete next[key]; return next })
+       setTimedStatus('File deleted successfully.')
+       await fetchVideos()
+     } catch (error) {
+       setTimedStatus(`Delete failed: ${error.message}`, 5000)
+     }
+   }
 
   const toggleVideoSelection = (key) => {
     const newSelected = new Set(selectedVideos)
@@ -678,32 +750,50 @@ function App() {
     }
   }
 
-  const bulkDeleteVideos = async () => {
-    if (selectedVideos.size === 0) { setStatus('No files selected.'); return }
-    const selectedList = filteredVideos.filter(v => selectedVideos.has(v.key))
-    const totalSize = selectedList.reduce((sum, item) => sum + (item.size || 0), 0)
-    if (!window.confirm(`Delete ${selectedVideos.size} file(s) (${formatBytes(totalSize)})?\nThis action cannot be undone.`)) return
+   const bulkDeleteVideos = async () => {
+     // Check ownership for all selected videos
+     const unowned = Array.from(selectedVideos).filter(key => {
+       const ownerId = ownershipByKey[key]
+       return ownerId && ownerId !== uploadDeviceIdRef.current
+     })
+     if (unowned.length > 0) {
+       setTimedStatus(`❌ You can only delete ${unowned.length} of the ${selectedVideos.size} selected file(s) (you don't own the others).`, 5000)
+       return
+     }
 
-    setStatus('Deleting files...')
-    try {
-      for (const key of selectedVideos) {
-        await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }))
-        try {
-          await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
-        } catch { /* ignore missing thumbnail */ }
-      }
-      setTimedStatus(`Deleted ${selectedVideos.size} file(s) successfully.`)
-      setSelectedVideos(new Set())
-      setLikesByKey((prev) => {
-        const next = { ...prev }
-        for (const key of selectedVideos) delete next[key]
-        return next
-      })
-      await fetchVideos()
-    } catch (error) {
-      setTimedStatus(`Bulk delete failed: ${error.message}`, 5000)
-    }
-  }
+     if (selectedVideos.size === 0) { setStatus('No files selected.'); return }
+     const selectedList = filteredVideos.filter(v => selectedVideos.has(v.key))
+     const totalSize = selectedList.reduce((sum, item) => sum + (item.size || 0), 0)
+     if (!window.confirm(`Delete ${selectedVideos.size} file(s) (${formatBytes(totalSize)})?\nThis action cannot be undone.`)) return
+
+     setStatus('Deleting files...')
+     try {
+       for (const key of selectedVideos) {
+         await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }))
+         try {
+           await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
+         } catch { /* ignore missing thumbnail */ }
+         try {
+           await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `__owners__/${encodeURIComponent(key)}.json` }))
+         } catch { /* ignore missing ownership record */ }
+       }
+       setTimedStatus(`Deleted ${selectedVideos.size} file(s) successfully.`)
+       setSelectedVideos(new Set())
+       setLikesByKey((prev) => {
+         const next = { ...prev }
+         for (const key of selectedVideos) delete next[key]
+         return next
+       })
+       setOwnershipByKey((prev) => {
+         const next = { ...prev }
+         for (const key of selectedVideos) delete next[key]
+         return next
+       })
+       await fetchVideos()
+     } catch (error) {
+       setTimedStatus(`Bulk delete failed: ${error.message}`, 5000)
+     }
+   }
 
   const toggleLike = async (key) => {
     if (pendingLikeKeys.has(key)) return
@@ -1046,14 +1136,20 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                       onClick={(e) => { e.stopPropagation(); setOpenMenuKey(openMenuKey === video.key ? null : video.key) }}
                       title="More options"
                     >⋯</button>
-                    {openMenuKey === video.key && (
-                      <div className="video-menu-dropdown">
-                        <button type="button" className="video-menu-item" title="Rename" onClick={() => { renameVideo(video); setOpenMenuKey(null) }}>✏️</button>
-                        <button type="button" className="video-menu-item" title="Copy link" onClick={() => { copyToClipboard(video.key); setOpenMenuKey(null) }}>🔗</button>
-                        <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
-                        <button type="button" className="video-menu-item dangerous" title="Delete" onClick={() => { deleteVideo(video.key); setOpenMenuKey(null) }}>🗑️</button>
-                      </div>
-                    )}
+                     {openMenuKey === video.key && (
+                       <div className="video-menu-dropdown">
+                         <button type="button" className="video-menu-item" title="Rename" onClick={() => { renameVideo(video); setOpenMenuKey(null) }}>✏️</button>
+                         <button type="button" className="video-menu-item" title="Copy link" onClick={() => { copyToClipboard(video.key); setOpenMenuKey(null) }}>🔗</button>
+                         <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
+                         <button
+                           type="button"
+                           className={`video-menu-item dangerous ${ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
+                           title={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can delete' : 'Delete'}
+                           onClick={() => { deleteVideo(video.key); setOpenMenuKey(null) }}
+                           disabled={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
+                         >🗑️</button>
+                       </div>
+                     )}
                   </div>
 
                   {/* Clicking thumbnail/play opens preview */}
@@ -1117,13 +1213,19 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                        })()}
                     </div>
                   </div>
-                  <div className="video-actions">
-                    <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">
-                      {copiedKey === video.key ? '✓' : '🔗'}
-                    </button>
-                    <button type="button" onClick={() => downloadVideo(video.key)} className="btn-download" title="Download">⬇️</button>
-                    <button type="button" onClick={() => deleteVideo(video.key)} className="btn-delete" title="Delete">🗑️</button>
-                  </div>
+                   <div className="video-actions">
+                     <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">
+                       {copiedKey === video.key ? '✓' : '🔗'}
+                     </button>
+                     <button type="button" onClick={() => downloadVideo(video.key)} className="btn-download" title="Download">⬇️</button>
+                     <button
+                       type="button"
+                       onClick={() => deleteVideo(video.key)}
+                       className={`btn-delete ${ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
+                       title={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can delete' : 'Delete'}
+                       disabled={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
+                     >🗑️</button>
+                   </div>
                </li>
              ))}
            </ul>
