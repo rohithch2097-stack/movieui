@@ -20,6 +20,8 @@ const MAX_RETRIES = 3
 const RETRY_DELAYS = [1000, 2000, 4000] // ms for retry 1, 2, 3
 
 const bucketName = import.meta.env.VITE_R2_BUCKET_NAME || 'movieui'
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const LIKE_DEVICE_ID_STORAGE_KEY = 'movieui_like_device_id'
 
 const VIDEO_EXTS = /\.(mp4|mov|avi|mkv|webm|m4v|flv|wmv|3gp)$/i
 const IMAGE_EXTS = /\.(jpg|jpeg|png|gif|webp|bmp|avif|svg)$/i
@@ -47,6 +49,16 @@ const formatBytes = (bytes = 0) => {
 const sanitizeFileName = (name = '') => name.replace(/[^a-zA-Z0-9._-]/g, '_')
 
 const buildObjectKey = (fileName, durationSeconds) => `${Date.now()}__dur-${durationSeconds}__${sanitizeFileName(fileName)}`
+
+const getApiUrl = (path) => `${apiBaseUrl}${path}`
+
+const getOrCreateLikeDeviceId = () => {
+  const existing = window.localStorage.getItem(LIKE_DEVICE_ID_STORAGE_KEY)
+  if (existing) return existing
+  const nextId = (window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^a-zA-Z0-9_-]/g, '')
+  window.localStorage.setItem(LIKE_DEVICE_ID_STORAGE_KEY, nextId)
+  return nextId
+}
 
 const parseObjectKey = (key = '') => {
   const encodedMatch = key.match(/^\d+__dur-(\d+)__(.+)$/)
@@ -171,6 +183,11 @@ function App() {
    const [openMenuKey, setOpenMenuKey] = useState(null) // Mobile menu state
    const [sortBy, setSortBy] = useState('newest') // 'newest'|'oldest'|'name-az'|'name-za'|'largest'|'smallest'
    const [mobileActiveKey, setMobileActiveKey] = useState(null)
+   const [likesByKey, setLikesByKey] = useState({})
+   const [isSyncingLikes, setIsSyncingLikes] = useState(false)
+   const [pendingLikeKeys, setPendingLikeKeys] = useState(new Set())
+   const [likesSyncError, setLikesSyncError] = useState('')
+   const likeDeviceIdRef = useRef('')
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -180,6 +197,7 @@ function App() {
 
    // Check if R2 credentials are configured and load any resumed session
    useEffect(() => {
+     likeDeviceIdRef.current = getOrCreateLikeDeviceId()
      if (!import.meta.env.VITE_R2_ACCESS_KEY_ID || !import.meta.env.VITE_R2_SECRET_ACCESS_KEY) {
        setConfigError('R2 credentials not configured in .env.local')
      } else {
@@ -217,6 +235,41 @@ function App() {
     }
   }, [videos])
 
+  const fetchLikesForKeys = async (keys) => {
+    if (!keys.length) {
+      setLikesByKey({})
+      return
+    }
+
+    setIsSyncingLikes(true)
+    try {
+      const params = new URLSearchParams()
+      keys.forEach((key) => params.append('keys', key))
+
+      const response = await fetch(getApiUrl(`/api/likes?${params.toString()}`), {
+        method: 'GET',
+        headers: {
+          'x-device-id': likeDeviceIdRef.current,
+        },
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.message || `Likes sync failed (${response.status})`)
+      }
+
+      const payload = await response.json()
+      setLikesByKey(payload.likesByKey || {})
+      setLikesSyncError('')
+    } catch (error) {
+      setLikesSyncError(error.message)
+      setTimedStatus(`Likes sync issue: ${error.message}`, 4500)
+    } finally {
+      setIsSyncingLikes(false)
+    }
+  }
+
+
   // Bug fix #3 — paginate through ALL objects (ListObjectsV2 max 1000/page)
   const fetchVideos = async () => {
     if (configError) return
@@ -235,7 +288,7 @@ function App() {
       } while (continuationToken)
 
       const videoList = allItems
-        .filter((item) => item.Key && !item.Key.startsWith('thumbnails/'))
+        .filter((item) => item.Key && !item.Key.startsWith('thumbnails/') && !item.Key.startsWith('__likes__/'))
         .map((item) => {
           const parsed = parseObjectKey(item.Key)
           return {
@@ -251,6 +304,7 @@ function App() {
         .sort((a, b) => b.lastModified - a.lastModified)
 
       setVideos(videoList)
+      await fetchLikesForKeys(videoList.map((video) => video.key))
 
       const knownDurations = {}
       videoList.forEach((video) => {
@@ -262,12 +316,27 @@ function App() {
         setVideoDurations((prev) => ({ ...prev, ...knownDurations }))
       }
 
-      // Generate signed thumbnail URLs only — browser will naturally hide broken ones via onError
-      // We use setThumbnailUrls with function form so existing valid URLs are preserved
+      // First check which thumbnails actually exist in R2 to avoid 404 signed-URL requests
+      const existingThumbKeys = new Set()
+      try {
+        let thumbToken = undefined
+        do {
+          const thumbList = await r2Client.send(new ListObjectsV2Command({
+            Bucket: bucketName,
+            Prefix: 'thumbnails/',
+            ContinuationToken: thumbToken,
+          }))
+          ;(thumbList.Contents ?? []).forEach((item) => existingThumbKeys.add(item.Key))
+          thumbToken = thumbList.IsTruncated ? thumbList.NextContinuationToken : undefined
+        } while (thumbToken)
+      } catch { /* non-critical — proceed without thumbnail list */ }
+
+      // Generate signed URLs only for thumbnails that actually exist
       const thumbEntries = await Promise.all(
         videoList.map(async (video) => {
           try {
             const thumbKey = `thumbnails/${video.key}.jpg`
+            if (!existingThumbKeys.has(thumbKey)) return [video.key, null]
             const url = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: thumbKey }), { expiresIn: 60 * 60 })
             return [video.key, url]
           } catch {
@@ -432,6 +501,7 @@ function App() {
       if (fileInputRef.current) fileInputRef.current.value = ''
       setUploadProgress(0)
 
+
       // Generate and upload thumbnail
       setStatus('Generating thumbnail...')
       try {
@@ -581,6 +651,7 @@ function App() {
         await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
       } catch { /* thumbnail may not exist — ignore */ }
       setThumbnailUrls(prev => { const n = { ...prev }; delete n[key]; return n })
+      setLikesByKey((prev) => { const next = { ...prev }; delete next[key]; return next })
       setTimedStatus('File deleted successfully.')
       await fetchVideos()
     } catch (error) {
@@ -622,9 +693,78 @@ function App() {
       }
       setTimedStatus(`Deleted ${selectedVideos.size} file(s) successfully.`)
       setSelectedVideos(new Set())
+      setLikesByKey((prev) => {
+        const next = { ...prev }
+        for (const key of selectedVideos) delete next[key]
+        return next
+      })
       await fetchVideos()
     } catch (error) {
       setTimedStatus(`Bulk delete failed: ${error.message}`, 5000)
+    }
+  }
+
+  const toggleLike = async (key) => {
+    if (pendingLikeKeys.has(key)) return
+
+    const hadLikeEntry = Object.prototype.hasOwnProperty.call(likesByKey, key)
+    const previousLike = likesByKey[key] || { count: 0, likedByMe: false, updatedAt: Date.now() }
+    const nextLikedByMe = !Boolean(previousLike.likedByMe)
+    const nextCount = Math.max(0, Number(previousLike.count || 0) + (nextLikedByMe ? 1 : -1))
+
+    setPendingLikeKeys((prev) => {
+      const next = new Set(prev)
+      next.add(key)
+      return next
+    })
+
+    // Optimistic update keeps tap feedback immediate while the network call is in flight.
+    setLikesByKey((prev) => ({
+      ...prev,
+      [key]: {
+        ...previousLike,
+        likedByMe: nextLikedByMe,
+        count: nextCount,
+        updatedAt: Date.now(),
+      },
+    }))
+
+    try {
+      const response = await fetch(getApiUrl('/api/likes/toggle'), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-device-id': likeDeviceIdRef.current,
+        },
+        body: JSON.stringify({ key }),
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.message || `Like action failed (${response.status})`)
+      }
+
+      const payload = await response.json()
+      setLikesByKey((prev) => ({
+        ...prev,
+        [key]: payload.like,
+      }))
+      setLikesSyncError('')
+    } catch (error) {
+      setLikesByKey((prev) => {
+        const next = { ...prev }
+        if (hadLikeEntry) next[key] = previousLike
+        else delete next[key]
+        return next
+      })
+      setLikesSyncError(error.message)
+      setTimedStatus(`Could not update like: ${error.message}`, 4500)
+    } finally {
+      setPendingLikeKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
     }
   }
 
@@ -800,10 +940,12 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
       <section className="panel">
         <div className="videos-header">
           <h2>Files</h2>
-          <button type="button" onClick={fetchVideos} disabled={isLoadingVideos || configError}>
+          <button type="button" onClick={fetchVideos} disabled={isLoadingVideos || isSyncingLikes || configError}>
             {isLoadingVideos ? 'Refreshing...' : 'Refresh'}
           </button>
         </div>
+
+        {likesSyncError ? <p className="likes-warning">Likes syncing issue: {likesSyncError}</p> : null}
 
         <div className="storage-summary">
           <span>🗂 {storageSummary.totalFiles} files</span>
@@ -952,6 +1094,29 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                         : null}
                     </p>
                     <p className="video-date">📅 {formatDate(video.lastModified)}</p>
+                     <div className="video-engagement-row">
+                       {(() => {
+                         const likeState = likesByKey[video.key] || { count: 0, likedByMe: false }
+                         const isLikePending = pendingLikeKeys.has(video.key)
+                         return (
+                      <>
+                      <button
+                        type="button"
+                         className={`btn-like ${likeState.likedByMe ? 'liked' : ''} ${isLikePending ? 'pending' : ''}`}
+                        onClick={() => toggleLike(video.key)}
+                         disabled={isLikePending}
+                         title={likeState.likedByMe ? 'Unlike' : 'Like'}
+                      >
+                        <span aria-hidden="true">♥</span>
+                         <span>{isLikePending ? 'Saving...' : (likeState.likedByMe ? 'Liked' : 'Like')}</span>
+                      </button>
+                      <span className="likes-count" aria-live="polite">
+                         {likeState.count ?? 0}
+                      </span>
+                      </>
+                         )
+                       })()}
+                    </div>
                   </div>
                   <div className="video-actions">
                     <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">

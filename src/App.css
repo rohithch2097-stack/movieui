@@ -761,6 +761,58 @@ button[type="submit"] {
   margin-top: 2px;
 }
 
+.video-engagement-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+}
+
+.btn-like {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.38rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-h);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.btn-like:hover:not(:disabled) {
+  border-color: rgba(244, 63, 94, 0.55);
+  color: #ffe4e6;
+}
+
+.btn-like.liked {
+  border-color: rgba(244, 63, 94, 0.65);
+  background: rgba(244, 63, 94, 0.2);
+  color: #ffd5de;
+}
+
+.btn-like.pending {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+.likes-count {
+  font-size: 0.82rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.likes-warning {
+  margin: 0 0 var(--spacing-md) 0;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+  font-size: 0.85rem;
+}
+
 .video-meta {
   margin: 0;
   font-size: 0.85rem;
