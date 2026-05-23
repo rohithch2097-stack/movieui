@@ -3,7 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-05-16"
 
 [vars]
-ALLOWED_ORIGIN = "http://localhost:5173"
+ALLOWED_ORIGINS = "http://localhost:5173,https://movieui-vfuh.onrender.com"
 
 [[r2_buckets]]
 binding = "VIDEOS_BUCKET"

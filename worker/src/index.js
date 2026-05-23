@@ -15,15 +15,19 @@ const formatBytes = (bytes = 0) => {
 const LIKE_OBJECT_PREFIX = '__likes__/'
 const MAX_LIKE_UPDATE_RETRIES = 6
 
-const getCorsHeaders = (env) => ({
-  'access-control-allow-origin': env.ALLOWED_ORIGIN ?? '*',
-  'access-control-allow-methods': 'GET,POST,PUT,OPTIONS',
-  'access-control-allow-headers': 'content-type,x-device-id',
-})
+const getCorsHeaders = (env, requestOrigin) => {
+  const allowedOrigins = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+  const origin = allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0] || '*'
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-methods': 'GET,POST,PUT,OPTIONS',
+    'access-control-allow-headers': 'content-type,x-device-id',
+  }
+}
 
-const withCors = (response, env) => {
+const withCors = (response, env, requestOrigin = '') => {
   const headers = new Headers(response.headers)
-  const cors = getCorsHeaders(env)
+  const cors = getCorsHeaders(env, requestOrigin)
   Object.entries(cors).forEach(([key, value]) => headers.set(key, value))
   return new Response(response.body, {
     status: response.status,
@@ -86,20 +90,22 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url)
     const { pathname } = url
+    const requestOrigin = request.headers.get('origin') || ''
 
     if (request.method === 'OPTIONS') {
-      return withCors(new Response(null, { status: 204 }), env)
+      return withCors(new Response(null, { status: 204 }), env, requestOrigin)
     }
 
     if (!env.VIDEOS_BUCKET) {
       return withCors(
         json({ message: 'R2 bucket binding missing. Add VIDEOS_BUCKET in wrangler.toml.' }, { status: 500 }),
-        env
+        env,
+        requestOrigin
       )
     }
 
     if (request.method === 'GET' && pathname === '/api/health') {
-      return withCors(json({ ok: true, service: 'cloudflare-worker-r2' }), env)
+      return withCors(json({ ok: true, service: 'cloudflare-worker-r2' }), env, requestOrigin)
     }
 
     if (request.method === 'GET' && pathname === '/api/videos') {
@@ -112,9 +118,9 @@ export default {
             fileName: item.key,
             sizeLabel: formatBytes(item.size),
           }))
-        return withCors(json({ videos }), env)
+        return withCors(json({ videos }), env, requestOrigin)
       } catch (error) {
-        return withCors(json({ message: `Could not fetch videos from R2. ${error.message}` }, { status: 500 }), env)
+        return withCors(json({ message: `Could not fetch videos from R2. ${error.message}` }, { status: 500 }), env, requestOrigin)
       }
     }
 
@@ -122,7 +128,7 @@ export default {
       try {
         const deviceId = sanitizeDeviceId(request.headers.get('x-device-id'))
         const keys = url.searchParams.getAll('keys').map(String).filter(Boolean)
-        if (!keys.length) return withCors(json({ likesByKey: {} }), env)
+        if (!keys.length) return withCors(json({ likesByKey: {} }), env, requestOrigin)
 
         const likesByKey = {}
         await Promise.all(
@@ -136,22 +142,22 @@ export default {
             }
           })
         )
-        return withCors(json({ likesByKey }), env)
+        return withCors(json({ likesByKey }), env, requestOrigin)
       } catch (error) {
-        return withCors(json({ message: `Could not load likes. ${error.message}` }, { status: 500 }), env)
+        return withCors(json({ message: `Could not load likes. ${error.message}` }, { status: 500 }), env, requestOrigin)
       }
     }
 
     if (request.method === 'POST' && pathname === '/api/likes/toggle') {
       try {
         const deviceId = sanitizeDeviceId(request.headers.get('x-device-id'))
-        if (!deviceId) return withCors(json({ message: 'Missing x-device-id header.' }, { status: 400 }), env)
+        if (!deviceId) return withCors(json({ message: 'Missing x-device-id header.' }, { status: 400 }), env, requestOrigin)
 
         const { key } = await request.json()
-        if (!key) return withCors(json({ message: 'key is required.' }, { status: 400 }), env)
+        if (!key) return withCors(json({ message: 'key is required.' }, { status: 400 }), env, requestOrigin)
 
         const videoKey = String(key)
-        if (isReservedKey(videoKey)) return withCors(json({ message: 'Invalid key.' }, { status: 400 }), env)
+        if (isReservedKey(videoKey)) return withCors(json({ message: 'Invalid key.' }, { status: 400 }), env, requestOrigin)
 
         const nextLikeRecord = await updateLikeRecordWithRetry(env, videoKey, (prev) => {
           const likeSet = new Set(prev.likers)
@@ -166,9 +172,9 @@ export default {
             likedByMe: nextLikeRecord.likers.includes(deviceId),
             updatedAt: nextLikeRecord.updatedAt,
           },
-        }), env)
+        }), env, requestOrigin)
       } catch (error) {
-        return withCors(json({ message: `Could not toggle like. ${error.message}` }, { status: 409 }), env)
+        return withCors(json({ message: `Could not toggle like. ${error.message}` }, { status: 409 }), env, requestOrigin)
       }
     }
 
@@ -176,34 +182,34 @@ export default {
       try {
         const { fileName, fileType } = await request.json()
         if (!fileName || !fileType) {
-          return withCors(json({ message: 'fileName and fileType are required.' }, { status: 400 }), env)
+          return withCors(json({ message: 'fileName and fileType are required.' }, { status: 400 }), env, requestOrigin)
         }
         if (!String(fileType).startsWith('video/')) {
-          return withCors(json({ message: 'Only video uploads are allowed.' }, { status: 400 }), env)
+          return withCors(json({ message: 'Only video uploads are allowed.' }, { status: 400 }), env, requestOrigin)
         }
         const safeName = sanitizeFileName(String(fileName))
         const objectKey = `${Date.now()}-${crypto.randomUUID()}-${safeName}`
         const uploadUrl = `${url.origin}/api/videos/upload/${encodeURIComponent(objectKey)}`
-        return withCors(json({ uploadUrl, key: objectKey }), env)
+        return withCors(json({ uploadUrl, key: objectKey }), env, requestOrigin)
       } catch (error) {
-        return withCors(json({ message: `Could not prepare upload URL. ${error.message}` }, { status: 500 }), env)
+        return withCors(json({ message: `Could not prepare upload URL. ${error.message}` }, { status: 500 }), env, requestOrigin)
       }
     }
 
     if (request.method === 'PUT' && pathname.startsWith('/api/videos/upload/')) {
       const objectKey = getObjectKey(pathname)
       if (!objectKey || isReservedKey(objectKey)) {
-        return withCors(json({ message: 'Invalid upload key.' }, { status: 400 }), env)
+        return withCors(json({ message: 'Invalid upload key.' }, { status: 400 }), env, requestOrigin)
       }
       const contentType = request.headers.get('content-type') ?? 'application/octet-stream'
       if (!contentType.startsWith('video/')) {
-        return withCors(json({ message: 'Only video uploads are allowed.' }, { status: 400 }), env)
+        return withCors(json({ message: 'Only video uploads are allowed.' }, { status: 400 }), env, requestOrigin)
       }
       try {
         await env.VIDEOS_BUCKET.put(objectKey, request.body, { httpMetadata: { contentType } })
-        return withCors(new Response(null, { status: 200 }), env)
+        return withCors(new Response(null, { status: 200 }), env, requestOrigin)
       } catch (error) {
-        return withCors(json({ message: `Could not upload video to R2. ${error.message}` }, { status: 500 }), env)
+        return withCors(json({ message: `Could not upload video to R2. ${error.message}` }, { status: 500 }), env, requestOrigin)
       }
     }
 
@@ -211,30 +217,30 @@ export default {
       try {
         const { key } = await request.json()
         if (!key || isReservedKey(String(key))) {
-          return withCors(json({ message: 'key is required.' }, { status: 400 }), env)
+          return withCors(json({ message: 'key is required.' }, { status: 400 }), env, requestOrigin)
         }
         const fileName = String(key).split('/').pop()
         const downloadUrl = `${url.origin}/api/videos/download/${encodeURIComponent(String(key))}`
-        return withCors(json({ downloadUrl, fileName }), env)
+        return withCors(json({ downloadUrl, fileName }), env, requestOrigin)
       } catch (error) {
-        return withCors(json({ message: `Could not prepare download URL. ${error.message}` }, { status: 500 }), env)
+        return withCors(json({ message: `Could not prepare download URL. ${error.message}` }, { status: 500 }), env, requestOrigin)
       }
     }
 
     if (request.method === 'GET' && pathname.startsWith('/api/videos/download/')) {
       const objectKey = getObjectKey(pathname)
       if (!objectKey || isReservedKey(objectKey)) {
-        return withCors(json({ message: 'Invalid download key.' }, { status: 400 }), env)
+        return withCors(json({ message: 'Invalid download key.' }, { status: 400 }), env, requestOrigin)
       }
       const object = await env.VIDEOS_BUCKET.get(objectKey)
-      if (!object) return withCors(json({ message: 'Video not found.' }, { status: 404 }), env)
+      if (!object) return withCors(json({ message: 'Video not found.' }, { status: 404 }), env, requestOrigin)
       const fileName = objectKey.split('/').pop()
       const headers = new Headers()
       headers.set('content-type', object.httpMetadata?.contentType ?? 'application/octet-stream')
       headers.set('content-disposition', `attachment; filename="${fileName}"`)
-      return withCors(new Response(object.body, { status: 200, headers }), env)
+      return withCors(new Response(object.body, { status: 200, headers }), env, requestOrigin)
     }
 
-    return withCors(json({ message: 'Not found' }, { status: 404 }), env)
+    return withCors(json({ message: 'Not found' }, { status: 404 }), env, requestOrigin)
   },
 }
