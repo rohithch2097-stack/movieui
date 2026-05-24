@@ -43,6 +43,131 @@
   padding: 0.35rem 0;
 }
 
+.marriage-banner {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  border: 1px solid rgba(214, 64, 114, 0.22);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.12);
+  background: var(--bg-secondary);
+}
+
+.marriage-banner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.12) 0%, rgba(17, 24, 39, 0.28) 48%, rgba(17, 24, 39, 0.48) 100%);
+  pointer-events: none;
+}
+
+.marriage-banner-image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.marriage-banner-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: clamp(1rem, 3vw, 2.5rem);
+  text-align: center;
+  transform: translateY(8%);
+}
+
+.marriage-banner-kicker,
+.marriage-banner-name,
+.marriage-banner-date,
+.marriage-banner-hashtag,
+.marriage-banner-rsvp {
+  margin: 0;
+}
+
+.marriage-banner-kicker {
+  color: rgba(255, 248, 240, 0.96);
+  font-size: clamp(0.62rem, 1.15vw, 0.9rem);
+  letter-spacing: 0.2em;
+  font-weight: 700;
+}
+
+.marriage-banner-couple {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(0.5rem, 1.4vw, 1.25rem);
+  flex-wrap: wrap;
+}
+
+.marriage-banner-name,
+.marriage-banner-ampersand {
+  font-family: Georgia, 'Times New Roman', serif;
+  color: #fff7ed;
+  text-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
+}
+
+.marriage-banner-name {
+  font-size: clamp(2.45rem, 5.9vw, 5.85rem);
+  line-height: 1;
+  font-weight: 500;
+}
+
+.marriage-banner-ampersand {
+  font-size: clamp(1.95rem, 4.6vw, 4.1rem);
+  font-style: italic;
+}
+
+.marriage-banner-date {
+  color: rgba(255, 244, 231, 0.96);
+  font-size: clamp(0.78rem, 1.4vw, 1.15rem);
+  letter-spacing: 0.16em;
+  font-weight: 700;
+}
+
+.marriage-banner-hashtag {
+  color: #fff7ed;
+  font-size: clamp(0.8rem, 1.55vw, 1.15rem);
+  font-weight: 600;
+}
+
+.marriage-banner-rsvp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 148px;
+  padding: 0.72rem 1.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 53, 15, 0.18);
+  background: linear-gradient(180deg, rgba(251, 243, 228, 0.98) 0%, rgba(245, 232, 209, 0.96) 100%);
+  color: #7c3a10;
+  font-size: clamp(0.76rem, 1.2vw, 0.92rem);
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+@media (max-width: 640px) {
+  .marriage-banner-overlay {
+    gap: 0.45rem;
+    padding: 0.8rem;
+    transform: translateY(10%);
+  }
+
+  .marriage-banner-kicker {
+    letter-spacing: 0.12em;
+  }
+
+  .marriage-banner-rsvp {
+    min-width: 122px;
+    padding: 0.56rem 1.05rem;
+  }
+}
+
 .app-brand-title {
   margin: 0;
   font-size: clamp(1.25rem, 2.1vw, 1.8rem);
@@ -1192,6 +1317,35 @@ button[type="submit"] {
   font-size: 0.82rem;
   color: var(--text);
   font-weight: 600;
+}
+
+/* Improve readability when cards sit on light backgrounds */
+.panel-gallery .video-name {
+  color: #111827;
+}
+
+.panel-gallery .video-meta,
+.panel-gallery .video-date,
+.panel-gallery .likes-count {
+  color: #374151;
+}
+
+.panel-gallery .btn-like {
+  border-color: rgba(190, 24, 93, 0.3);
+  background: rgba(253, 242, 248, 0.95);
+  color: #7a1d45;
+}
+
+.panel-gallery .btn-like:hover:not(:disabled) {
+  border-color: rgba(190, 24, 93, 0.6);
+  background: rgba(252, 231, 243, 1);
+  color: #6b183d;
+}
+
+.panel-gallery .btn-like.liked {
+  border-color: rgba(190, 24, 93, 0.7);
+  background: rgba(244, 114, 182, 0.22);
+  color: #6b183d;
 }
 
 .likes-warning {

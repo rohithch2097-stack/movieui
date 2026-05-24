@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import marriageBannerImage from './assets/marrge.png'
 import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, CopyObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
@@ -1224,6 +1225,25 @@ function App() {
               🔑 Admin Login
             </button>
           )}
+        </div>
+      </section>
+
+      <section className="marriage-banner" aria-label="Wedding banner">
+        <img
+          src={marriageBannerImage}
+          alt="Marriage celebration banner"
+          className="marriage-banner-image"
+        />
+        <div className="marriage-banner-overlay">
+          <p className="marriage-banner-kicker">TOGETHER WITH THEIR FAMILIES</p>
+          <div className="marriage-banner-couple">
+            <h2 className="marriage-banner-name">Test1</h2>
+            <span className="marriage-banner-ampersand">&amp;</span>
+            <h2 className="marriage-banner-name">Test2</h2>
+          </div>
+          <p className="marriage-banner-date">20 DECEMBER 2025</p>
+          <p className="marriage-banner-hashtag">#Test1WedsTest2</p>
+          <span className="marriage-banner-rsvp">RSVP NOW</span>
         </div>
       </section>
 
