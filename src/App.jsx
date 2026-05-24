@@ -355,22 +355,40 @@ function App() {
      }
 
      try {
-       const ownershipMap = {}
+       const ownershipMap = Object.fromEntries(keys.map((key) => [key, null]))
+       const ownerObjectSet = new Set()
+
+       // List owner metadata once so we only fetch records that actually exist.
+       let continuationToken = undefined
+       do {
+         const listResponse = await r2Client.send(new ListObjectsV2Command({
+           Bucket: bucketName,
+           Prefix: '__owners__/',
+           ContinuationToken: continuationToken,
+         }))
+         ;(listResponse.Contents ?? []).forEach((item) => {
+           if (item?.Key) ownerObjectSet.add(item.Key)
+         })
+         continuationToken = listResponse.IsTruncated ? listResponse.NextContinuationToken : undefined
+       } while (continuationToken)
+
        for (const key of keys) {
+         const ownerObjectKey = `__owners__/${encodeURIComponent(key)}.json`
+         if (!ownerObjectSet.has(ownerObjectKey)) continue
+
          try {
-           const ownerKey = `__owners__/${encodeURIComponent(key)}.json`
            const response = await r2Client.send(new GetObjectCommand({
              Bucket: bucketName,
-             Key: ownerKey,
+             Key: ownerObjectKey,
            }))
            const text = await response.Body.transformToString()
            const ownerData = JSON.parse(text)
-           ownershipMap[key] = ownerData.deviceId
+           ownershipMap[key] = ownerData?.deviceId || null
          } catch {
-           // No ownership record means pre-existing file or upload without ownership tracking
            ownershipMap[key] = null
          }
        }
+
        setOwnershipByKey(ownershipMap)
      } catch (error) {
        // Non-critical — continue without ownership info
