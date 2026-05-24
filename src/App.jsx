@@ -1462,28 +1462,30 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               My Photos
             </button>
           </div>
-          <div className="search-bar">
-            <input
-              type="text"
-              placeholder="🔍 Search by name..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+          <div className="search-sort-inline">
+            <div className="search-bar">
+              <input
+                type="text"
+                placeholder="🔍 Search by name..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                disabled={configError}
+              />
+            </div>
+            <select
+              className="sort-select"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
               disabled={configError}
-            />
+            >
+              <option value="newest">🕐 Newest first</option>
+              <option value="oldest">🕐 Oldest first</option>
+              <option value="name-az">🔤 Name A → Z</option>
+              <option value="name-za">🔤 Name Z → A</option>
+              <option value="largest">📦 Largest first</option>
+              <option value="smallest">📦 Smallest first</option>
+            </select>
           </div>
-          <select
-            className="sort-select"
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value)}
-            disabled={configError}
-          >
-            <option value="newest">🕐 Newest first</option>
-            <option value="oldest">🕐 Oldest first</option>
-            <option value="name-az">🔤 Name A → Z</option>
-            <option value="name-za">🔤 Name Z → A</option>
-            <option value="largest">📦 Largest first</option>
-            <option value="smallest">📦 Smallest first</option>
-          </select>
         </div>
 
         {filteredVideos.length > 0 && isSelectionMode && (

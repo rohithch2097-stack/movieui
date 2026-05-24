@@ -975,15 +975,18 @@ button[type="submit"] {
   gap: var(--spacing-md);
   margin: var(--spacing-lg) 0;
   align-items: center;
+  flex-wrap: wrap;
 
   .search-bar {
     flex: 1;
+    min-width: 200px;
     margin: 0;
   }
 
   @media (max-width: 480px) {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
     position: sticky;
     top: 0.35rem;
     z-index: 30;
@@ -993,6 +996,19 @@ button[type="submit"] {
     background: rgba(22, 18, 32, 0.94);
     backdrop-filter: blur(7px);
   }
+}
+
+.search-sort-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex: 1 0 auto;
+  min-width: 0;
+}
+
+.search-sort-inline .search-bar {
+  flex: 1;
+  min-width: 200px;
 }
 
 .sort-select {
@@ -1005,8 +1021,10 @@ button[type="submit"] {
   font-family: var(--sans);
   cursor: pointer;
   transition: border-color 0.2s;
-  white-space: nowrap;
-  min-width: 160px;
+  min-width: 140px;
+  max-width: 180px;
+  text-overflow: ellipsis;
+  overflow: hidden;
 
   &:focus {
     outline: none;
@@ -1014,7 +1032,11 @@ button[type="submit"] {
   }
 
   @media (max-width: 480px) {
-    width: 100%;
+    flex: 0 0 auto;
+    min-width: 120px;
+    max-width: 150px;
+    padding: 0.65rem 0.85rem;
+    font-size: 0.85rem;
   }
 }
 
@@ -1078,13 +1100,39 @@ button[type="submit"] {
 }
 
 @media (max-width: 480px) {
+  .search-sort-row {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
   .filter-chip-group {
+    order: 1;
     width: 100%;
     justify-content: space-between;
   }
 
   .filter-chip {
     flex: 1;
+  }
+
+  .search-sort-inline {
+    order: 2;
+    width: 100%;
+    gap: 0.45rem;
+    flex-wrap: nowrap;
+  }
+
+  .search-sort-inline .search-bar {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .search-sort-inline .sort-select {
+    width: auto;
+    min-width: 128px;
+    flex: 0 0 128px;
   }
 
   .btn-tv-mode {
@@ -1486,12 +1534,7 @@ button[type="submit"] {
 }
 
 .video-name-muted {
-  color: #b0988e;
-  font-weight: 400;
-  opacity: 0.6;
-  font-style: italic;
-  pointer-events: none;
-  user-select: none;
+  display: none;
 }
 
 .video-date {
