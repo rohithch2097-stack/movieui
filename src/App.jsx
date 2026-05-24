@@ -24,6 +24,9 @@ const bucketName = import.meta.env.VITE_R2_BUCKET_NAME || 'movieui'
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const LIKE_DEVICE_ID_STORAGE_KEY = 'movieui_like_device_id'
 const UPLOAD_DEVICE_ID_STORAGE_KEY = 'movieui_upload_device_id'
+const ADMIN_SESSION_KEY = 'movieui_admin_session'
+const ADMIN_USERNAME = import.meta.env.VITE_ADMIN_USERNAME || ''
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || ''
 
 const VIDEO_EXTS = /\.(mp4|mov|avi|mkv|webm|m4v|flv|wmv|3gp)$/i
 const IMAGE_EXTS = /\.(jpg|jpeg|png|gif|webp|bmp|avif|svg)$/i
@@ -204,6 +207,11 @@ function App() {
    const [likesSyncError, setLikesSyncError] = useState('')
    const [shareModalUrl, setShareModalUrl] = useState(null)
    const [ownershipByKey, setOwnershipByKey] = useState({})
+   const [isAdminUser, setIsAdminUser] = useState(() => sessionStorage.getItem(ADMIN_SESSION_KEY) === 'true')
+   const [showAdminLogin, setShowAdminLogin] = useState(false)
+   const [adminLoginUser, setAdminLoginUser] = useState('')
+   const [adminLoginPass, setAdminLoginPass] = useState('')
+   const [adminLoginError, setAdminLoginError] = useState('')
    const likeDeviceIdRef = useRef('')
    const uploadDeviceIdRef = useRef('')
 
@@ -211,6 +219,31 @@ function App() {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
     setStatus(msg)
     statusTimerRef.current = setTimeout(() => setStatus(''), delay)
+  }
+
+  const handleAdminLogin = (e) => {
+    e.preventDefault()
+    if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+      setAdminLoginError('Admin credentials not configured in environment.')
+      return
+    }
+    if (adminLoginUser.trim() === ADMIN_USERNAME && adminLoginPass === ADMIN_PASSWORD) {
+      sessionStorage.setItem(ADMIN_SESSION_KEY, 'true')
+      setIsAdminUser(true)
+      setShowAdminLogin(false)
+      setAdminLoginUser('')
+      setAdminLoginPass('')
+      setAdminLoginError('')
+      setTimedStatus('👑 Admin mode enabled.', 3000)
+    } else {
+      setAdminLoginError('Incorrect username or password.')
+    }
+  }
+
+  const handleAdminLogout = () => {
+    sessionStorage.removeItem(ADMIN_SESSION_KEY)
+    setIsAdminUser(false)
+    setTimedStatus('Admin mode disabled.', 3000)
   }
 
     // Check if R2 credentials are configured and load any resumed session
@@ -791,7 +824,7 @@ function App() {
 
   const renameVideo = async (video) => {
     const ownerId = ownershipByKey[video.key]
-    if (ownerId && ownerId !== uploadDeviceIdRef.current) {
+    if (!isAdminUser && ownerId && ownerId !== uploadDeviceIdRef.current) {
       setTimedStatus('❌ You can only rename files you uploaded.', 5000)
       return
     }
@@ -850,9 +883,9 @@ function App() {
 
    // Bug fix #1 — also delete the orphaned thumbnail from R2
    const deleteVideo = async (key) => {
-     // Check ownership
+     // Check ownership — admins can delete anything
      const ownerId = ownershipByKey[key]
-     if (ownerId && ownerId !== uploadDeviceIdRef.current) {
+     if (!isAdminUser && ownerId && ownerId !== uploadDeviceIdRef.current) {
        setTimedStatus('❌ You can only delete files you uploaded.', 5000)
        return
      }
@@ -942,10 +975,10 @@ function App() {
    const bulkDeleteVideos = async () => {
      const selectedKeys = Array.from(selectedVideos)
 
-     // Check ownership for all selected videos
+     // Check ownership — admins can delete anything
      const unowned = selectedKeys.filter(key => {
        const ownerId = ownershipByKey[key]
-       return ownerId && ownerId !== uploadDeviceIdRef.current
+       return !isAdminUser && ownerId && ownerId !== uploadDeviceIdRef.current
      })
      if (unowned.length > 0) {
        setTimedStatus(`❌ You can only delete ${unowned.length} of the ${selectedKeys.length} selected file(s) (you don't own the others).`, 5000)
@@ -1173,8 +1206,36 @@ function App() {
   return (
     <main className="app-shell">
       <div>
-        <h1>🎬 Media Vault</h1>
-        <p className="subtitle">Upload, manage, and share your videos & images securely in the cloud</p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+          <div>
+            <h1>🎬 Media Vault</h1>
+            <p className="subtitle">Upload, manage, and share your videos & images securely in the cloud</p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', paddingTop: '0.25rem', flexShrink: 0 }}>
+            {isAdminUser ? (
+              <>
+                <span style={{ fontSize: '0.8rem', background: 'linear-gradient(135deg, #f59e0b, #d97706)', color: '#fff', padding: '0.25rem 0.65rem', borderRadius: '999px', fontWeight: 600 }}>
+                  👑 Admin
+                </span>
+                <button
+                  type="button"
+                  onClick={handleAdminLogout}
+                  style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem', background: 'transparent', border: '1px solid var(--border)', borderRadius: '999px', color: 'var(--text)', cursor: 'pointer' }}
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { setShowAdminLogin(true); setAdminLoginError('') }}
+                style={{ fontSize: '0.8rem', padding: '0.28rem 0.75rem', background: 'transparent', border: '1px solid var(--border)', borderRadius: '999px', color: 'var(--text)', cursor: 'pointer' }}
+              >
+                🔑 Admin Login
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       {configError ? (
@@ -1381,12 +1442,13 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                  key={video.key}
                  className={`video-item ${mobileActiveKey === video.key ? 'mobile-active' : ''}`}
                  onClick={(event) => handleCardClick(event, video.key)}
-                 onTouchStart={(event) => {
-                   triggerMobileCardEffect(video.key)
+                 onPointerDown={(event) => {
+                   if (event.pointerType === 'touch') triggerMobileCardEffect(video.key)
                    startSelectionLongPress(event, video.key)
                  }}
-                 onTouchEnd={endSelectionLongPress}
-                 onTouchCancel={endSelectionLongPress}
+                 onPointerUp={endSelectionLongPress}
+                 onPointerLeave={endSelectionLongPress}
+                 onPointerCancel={endSelectionLongPress}
                >
                  {isSelectionMode ? (
                    <input
@@ -1409,19 +1471,19 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                        <div className="video-menu-dropdown">
                          <button
                            type="button"
-                           className={`video-menu-item ${ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
-                           title={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can rename' : 'Rename'}
+                           className={`video-menu-item ${!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
+                           title={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can rename' : 'Rename'}
                            onClick={() => { renameVideo(video); setOpenMenuKey(null) }}
-                           disabled={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
+                           disabled={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
                          >✏️</button>
                          <button type="button" className="video-menu-item" title="Copy link" onClick={() => { copyToClipboard(video.key); setOpenMenuKey(null) }}>🔗</button>
                          <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
                          <button
                            type="button"
-                           className={`video-menu-item dangerous ${ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
-                           title={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can delete' : 'Delete'}
+                           className={`video-menu-item dangerous ${!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
+                           title={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can delete' : 'Delete'}
                            onClick={() => { deleteVideo(video.key); setOpenMenuKey(null) }}
-                           disabled={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
+                           disabled={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
                          >🗑️</button>
                        </div>
                      )}
@@ -1496,9 +1558,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                      <button
                        type="button"
                        onClick={() => deleteVideo(video.key)}
-                       className={`btn-delete ${ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
-                       title={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can delete' : 'Delete'}
-                       disabled={ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
+                       className={`btn-delete ${!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
+                       title={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can delete' : 'Delete'}
+                       disabled={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
                      >🗑️</button>
                    </div>
                </li>
@@ -1601,6 +1663,49 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
             <div className="preview-actions">
               <button onClick={() => setShareModalUrl(null)} className="btn-close-preview">Close</button>
             </div>
+          </div>
+        </div>
+      )}
+      {showAdminLogin && (
+        <div className="preview-modal-overlay" onClick={() => setShowAdminLogin(false)}>
+          <div className="preview-modal" style={{ maxWidth: '380px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="preview-header">
+              <h3>🔑 Admin Login</h3>
+              <button className="close-btn" onClick={() => setShowAdminLogin(false)}>✕</button>
+            </div>
+            <form onSubmit={handleAdminLogin} style={{ padding: 'var(--spacing-xl)', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.85rem', color: 'var(--text)', fontWeight: 500 }}>Username</label>
+                <input
+                  type="text"
+                  value={adminLoginUser}
+                  onChange={(e) => setAdminLoginUser(e.target.value)}
+                  autoComplete="username"
+                  placeholder="Enter admin username"
+                  style={{ padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', background: 'var(--bg)', color: 'var(--text-h)', fontSize: '0.9rem' }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.85rem', color: 'var(--text)', fontWeight: 500 }}>Password</label>
+                <input
+                  type="password"
+                  value={adminLoginPass}
+                  onChange={(e) => setAdminLoginPass(e.target.value)}
+                  autoComplete="current-password"
+                  placeholder="Enter admin password"
+                  style={{ padding: '0.5rem 0.75rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', background: 'var(--bg)', color: 'var(--text-h)', fontSize: '0.9rem' }}
+                />
+              </div>
+              {adminLoginError && (
+                <p style={{ margin: 0, color: 'var(--danger)', fontSize: '0.85rem' }}>⚠️ {adminLoginError}</p>
+              )}
+              <div className="preview-actions" style={{ marginTop: '0.5rem' }}>
+                <button type="button" className="btn-close-preview" onClick={() => setShowAdminLogin(false)}>Cancel</button>
+                <button type="submit" style={{ padding: '0.5rem 1.25rem', background: 'linear-gradient(135deg, #f59e0b, #d97706)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem' }}>
+                  Login
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
