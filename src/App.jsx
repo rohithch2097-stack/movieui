@@ -1363,13 +1363,25 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                             >✏️</button>
                           )}
                          <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
-                         <button
-                           type="button"
-                           className={`video-menu-item dangerous ${!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
-                           title={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can delete' : 'Delete'}
-                           onClick={() => { deleteVideo(video.key); setOpenMenuKey(null) }}
-                           disabled={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
-                         >🗑️</button>
+                         {(() => {
+                            const isNotOwner = !isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current;
+                            return (
+                              <button
+                                type="button"
+                                className={`video-menu-item dangerous${isNotOwner ? ' disabled' : ''}`}
+                                title={isNotOwner ? 'Only owner can delete' : 'Delete'}
+                                onClick={() => {
+                                  if (isNotOwner) {
+                                    setTimedStatus('❌ You are not the owner of this file.', 3000);
+                                    setOpenMenuKey(null);
+                                  } else {
+                                    deleteVideo(video.key);
+                                    setOpenMenuKey(null);
+                                  }
+                                }}
+                              >🗑️</button>
+                            );
+                          })()}
                        </div>
                      )}
                   </div>
