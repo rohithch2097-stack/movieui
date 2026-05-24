@@ -174,10 +174,12 @@ function App() {
    const mobileActiveTimerRef = useRef(null)
    const selectionLongPressTimerRef = useRef(null)
    const selectionLongPressHandledRef = useRef(false)
-   const [selectedFile, setSelectedFile] = useState(null)
-  const [videos, setVideos] = useState([])
-  const [status, setStatus] = useState('')
-  const [isUploading, setIsUploading] = useState(false)
+   const [uploadQueue, setUploadQueue] = useState([])
+   const [uploadStatuses, setUploadStatuses] = useState({})
+   const [currentUploadIndex, setCurrentUploadIndex] = useState(-1)
+   const [videos, setVideos] = useState([])
+   const [status, setStatus] = useState('')
+   const [isUploading, setIsUploading] = useState(false)
   const [isLoadingVideos, setIsLoadingVideos] = useState(false)
   const [configError, setConfigError] = useState('')
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -241,10 +243,15 @@ function App() {
   }, [])
 
   const selectedFileLabel = useMemo(() => {
-    if (!selectedFile) return 'No file selected'
-    const sizeInMb = (selectedFile.size / (1024 * 1024)).toFixed(2)
-    return `${selectedFile.name} (${sizeInMb} MB)`
-  }, [selectedFile])
+    if (uploadQueue.length === 0) return 'No files selected'
+    if (uploadQueue.length === 1) {
+      const file = uploadQueue[0]
+      const sizeInMb = (file.size / (1024 * 1024)).toFixed(2)
+      return `1 file selected: ${file.name} (${sizeInMb} MB)`
+    }
+    const totalSize = uploadQueue.reduce((sum, f) => sum + f.size, 0)
+    return `${uploadQueue.length} files selected (${formatBytes(totalSize)})`
+  }, [uploadQueue])
 
   const storageSummary = useMemo(() => {
     const totalBytes = videos.reduce((sum, item) => sum + (item.size || 0), 0)
@@ -406,12 +413,32 @@ function App() {
   }
 
   const onFileChange = (event) => {
-    const nextFile = event.target.files?.[0] ?? null
-    if (nextFile && !isSupportedFile(nextFile)) {
-      setTimedStatus('Unsupported file type. Please select a video or image.', 4000)
-      return
+    const files = event.target.files ?? []
+    const newFiles = Array.from(files).filter(f => {
+      if (!isSupportedFile(f)) {
+        setTimedStatus(`Unsupported file: ${f.name}. Please select video or image files.`, 4000)
+        return false
+      }
+      return true
+    })
+    if (newFiles.length > 0) {
+      setUploadQueue((prev) => [...prev, ...newFiles])
     }
-    setSelectedFile(nextFile)
+  }
+
+  const removeFromQueue = (index) => {
+    setUploadQueue((prev) => prev.filter((_, i) => i !== index))
+    setUploadStatuses((prev) => {
+      const next = { ...prev }
+      delete next[index]
+      return next
+    })
+  }
+
+  const clearQueue = () => {
+    setUploadQueue([])
+    setUploadStatuses({})
+    setCurrentUploadIndex(-1)
   }
 
   const onFileInputClick = (event) => {
@@ -439,54 +466,34 @@ function App() {
     signal?.addEventListener?.('abort', onAbort, { once: true })
   })
 
-  const uploadVideoMultipart = async () => {
-    const fileToUpload = selectedFile
-
-    if (!fileToUpload) {
-      setStatus('Select a file first.')
-      return
-    }
-
-    if (configError) {
-      setStatus('R2 credentials not configured.')
-      return
-    }
-
+  const uploadSingleFile = async (fileToUpload, queueIndex, abortSignal) => {
     const fileType = getFileType(fileToUpload.name) || (fileToUpload.type.startsWith('image/') ? 'image' : 'video')
     const isImage = fileType === 'image'
 
-    setStatus('Reading file metadata...')
+    setUploadStatuses((prev) => ({ ...prev, [queueIndex]: 'reading-metadata' }))
     const durationSeconds = isImage ? 0 : await readFileDurationSeconds(fileToUpload)
 
-    setIsUploading(true)
-    const uploadAbortController = new AbortController()
-    uploadAbortControllerRef.current = uploadAbortController
     const objectKey = buildObjectKey(fileToUpload.name, durationSeconds)
     let uploadIdToUse = null
 
     try {
       if (isImage) {
-        // Images are small — single PutObject, no multipart needed
-        setStatus('Uploading image...')
+        setUploadStatuses((prev) => ({ ...prev, [queueIndex]: 'uploading' }))
         const buffer = await fileToUpload.arrayBuffer()
-        setUploadProgress(50)
         await r2Client.send(new PutObjectCommand({
           Bucket: bucketName,
           Key: objectKey,
           Body: new Uint8Array(buffer),
           ContentType: fileToUpload.type || 'image/jpeg',
-        }), { abortSignal: uploadAbortController.signal })
-        setUploadProgress(100)
+        }), { abortSignal })
       } else {
-        // Videos use multipart chunked upload
         const totalParts = Math.ceil(fileToUpload.size / CHUNK_SIZE)
-        setStatus('Initializing multipart upload...')
         const createCommand = new CreateMultipartUploadCommand({
           Bucket: bucketName,
           Key: objectKey,
           ContentType: fileToUpload.type || 'video/mp4',
         })
-        const createResponse = await r2Client.send(createCommand, { abortSignal: uploadAbortController.signal })
+        const createResponse = await r2Client.send(createCommand, { abortSignal })
         uploadIdToUse = createResponse.UploadId
 
         const uploadedParts = {}
@@ -501,7 +508,6 @@ function App() {
           let lastError
           for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-              setStatus(`Uploading part ${partNum}/${totalParts} (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`)
               const uploadCommand = new UploadPartCommand({
                 Bucket: bucketName,
                 Key: objectKey,
@@ -509,17 +515,14 @@ function App() {
                 UploadId: uploadIdToUse,
                 Body: new Uint8Array(partBuffer),
               })
-              const uploadResponse = await r2Client.send(uploadCommand, { abortSignal: uploadAbortController.signal })
+              const uploadResponse = await r2Client.send(uploadCommand, { abortSignal })
               uploadedParts[partNum] = uploadResponse.ETag
               break
             } catch (err) {
               lastError = err
-              // On cancel, stop immediately and do not retry.
-              if (isAbortError(err) || uploadAbortController.signal.aborted) {
-                throw err
-              }
+              if (isAbortError(err) || abortSignal.aborted) throw err
               if (attempt < MAX_RETRIES) {
-                await waitWithAbort(RETRY_DELAYS[attempt], uploadAbortController.signal)
+                await waitWithAbort(RETRY_DELAYS[attempt], abortSignal)
               }
             }
           }
@@ -532,7 +535,6 @@ function App() {
           setUploadProgress(Math.min(Math.round((uploadedBytes / fileToUpload.size) * 100), 99))
         }
 
-        setStatus('Finalizing upload...')
         const sortedParts = Object.entries(uploadedParts)
           .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
           .map(([partNum, ETag]) => ({ PartNumber: parseInt(partNum), ETag }))
@@ -542,20 +544,11 @@ function App() {
           Key: objectKey,
           UploadId: uploadIdToUse,
           MultipartUpload: { Parts: sortedParts },
-        }), { abortSignal: uploadAbortController.signal })
+        }), { abortSignal })
       }
-
-      setTimedStatus('✅ Upload completed successfully.')
-      setSelectedFile(null)
-      if (durationSeconds > 0) {
-        setVideoDurations((prev) => ({ ...prev, [objectKey]: durationSeconds }))
-      }
-      if (fileInputRef.current) fileInputRef.current.value = ''
-      setUploadProgress(0)
-
 
       // Generate and upload thumbnail
-      setStatus('Generating thumbnail...')
+      setUploadStatuses((prev) => ({ ...prev, [queueIndex]: 'generating-thumbnail' }))
       try {
         const thumbBlob = isImage
           ? await captureImageThumbnail(fileToUpload)
@@ -568,54 +561,111 @@ function App() {
             Key: thumbKey,
             Body: new Uint8Array(thumbBuffer),
             ContentType: 'image/jpeg',
-          }), { abortSignal: uploadAbortController.signal })
+          }), { abortSignal })
           const thumbUrl = await getSignedUrl(r2Client, new GetObjectCommand({ Bucket: bucketName, Key: thumbKey }), { expiresIn: 60 * 60 })
           setThumbnailUrls((prev) => ({ ...prev, [objectKey]: thumbUrl }))
         }
-       } catch { /* thumbnail failure is non-critical */ }
-       setStatus('')
+      } catch {
+        // Non-critical
+      }
 
-       // Store ownership info
-       try {
-         const ownerKey = `__owners__/${encodeURIComponent(objectKey)}.json`
-         const ownerData = JSON.stringify({
-           deviceId: uploadDeviceIdRef.current,
-           uploadedAt: new Date().toISOString(),
-         })
-         await r2Client.send(new PutObjectCommand({
-           Bucket: bucketName,
-           Key: ownerKey,
-           Body: new TextEncoder().encode(ownerData),
-           ContentType: 'application/json',
-         }), { abortSignal: uploadAbortController.signal })
-       } catch (error) {
-         console.error('Failed to store ownership info:', error)
-         // Non-critical — continue
-       }
+      // Store ownership info
+      try {
+        const ownerKey = `__owners__/${encodeURIComponent(objectKey)}.json`
+        const ownerData = JSON.stringify({
+          deviceId: uploadDeviceIdRef.current,
+          uploadedAt: new Date().toISOString(),
+        })
+        await r2Client.send(new PutObjectCommand({
+          Bucket: bucketName,
+          Key: ownerKey,
+          Body: new TextEncoder().encode(ownerData),
+          ContentType: 'application/json',
+        }), { abortSignal })
+      } catch (error) {
+        console.error('Failed to store ownership info:', error)
+      }
 
-       await fetchVideos()
+      setUploadStatuses((prev) => ({ ...prev, [queueIndex]: 'completed' }))
+      if (durationSeconds > 0) {
+        setVideoDurations((prev) => ({ ...prev, [objectKey]: durationSeconds }))
+      }
     } catch (error) {
       const isAbort = isAbortError(error)
       if (uploadIdToUse) {
         try {
           await r2Client.send(new AbortMultipartUploadCommand({ Bucket: bucketName, Key: objectKey, UploadId: uploadIdToUse }))
-        } catch { /* ignore */ }
+        } catch {
+          // Ignore
+        }
       }
-      setTimedStatus(isAbort ? 'Upload canceled.' : `Upload failed: ${error.message}`, 5000)
-      setUploadProgress(0)
+      if (isAbort) {
+        setUploadStatuses((prev) => ({ ...prev, [queueIndex]: 'cancelled' }))
+      } else {
+        setUploadStatuses((prev) => ({ ...prev, [queueIndex]: `failed: ${error.message}` }))
+      }
+      throw error
+    }
+  }
+
+  const uploadBulkVideos = async () => {
+    if (uploadQueue.length === 0) {
+      setStatus('Add files first.')
+      return
+    }
+
+    if (configError) {
+      setStatus('R2 credentials not configured.')
+      return
+    }
+
+    setIsUploading(true)
+    const uploadAbortController = new AbortController()
+    uploadAbortControllerRef.current = uploadAbortController
+
+    try {
+      const totalFiles = uploadQueue.length
+      for (let idx = 0; idx < totalFiles; idx++) {
+        if (uploadAbortController.signal.aborted) break
+
+        setCurrentUploadIndex(idx)
+        setStatus(`Uploading ${idx + 1} of ${totalFiles}: ${uploadQueue[idx].name}`)
+        setUploadProgress(0)
+
+        try {
+          await uploadSingleFile(uploadQueue[idx], idx, uploadAbortController.signal)
+        } catch (error) {
+          if (!isAbortError(error)) {
+            console.error(`File ${idx + 1} failed:`, error)
+            // Continue to next file
+          }
+        }
+      }
+
+      setStatus('')
+      setTimedStatus(`✅ Uploaded ${totalFiles} file(s) successfully.`)
+      setUploadQueue([])
+      setUploadStatuses({})
+      setCurrentUploadIndex(-1)
+      await fetchVideos()
+    } catch (error) {
+      setTimedStatus(`Upload batch failed: ${error.message}`, 5000)
     } finally {
       uploadAbortControllerRef.current = null
       setIsUploading(false)
+      setUploadProgress(0)
     }
   }
+
+  const uploadVideoMultipart = () => uploadBulkVideos()
 
   const cancelUpload = () => {
     if (!uploadAbortControllerRef.current) return
     uploadAbortControllerRef.current.abort()
-    setStatus('Canceling upload...')
+    setStatus('Canceling uploads...')
   }
 
-  const uploadVideo = () => uploadVideoMultipart()
+  const uploadVideo = () => uploadBulkVideos()
 
   const previewVideo = async (key) => {
     setIsLoadingPreview(true)
@@ -1064,31 +1114,91 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
       ) : null}
 
       <section className="panel">
-        <h2>Upload File</h2>
+        <h2>Upload Files</h2>
         <div
           className={`drag-drop-area ${isDragOver ? 'drag-over' : ''}`}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
+          onDrop={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setIsDragOver(false)
+            const files = e.dataTransfer.files
+            if (files.length > 0) {
+              const newFiles = Array.from(files).filter(f => {
+                if (!isSupportedFile(f)) {
+                  setTimedStatus(`Unsupported file: ${f.name}`, 4000)
+                  return false
+                }
+                return true
+              })
+              if (newFiles.length > 0) {
+                setUploadQueue((prev) => [...prev, ...newFiles])
+              }
+            }
+          }}
         >
-          <p className="drag-drop-text">Drag & drop a video or image here, or click to select</p>
-          <input ref={fileInputRef} type="file" accept="video/*,image/*" onClick={onFileInputClick} onChange={onFileChange} disabled={configError} />
+          <p className="drag-drop-text">Drag & drop multiple videos or images here, or click to select</p>
+          <input ref={fileInputRef} type="file" accept="video/*,image/*" multiple onClick={onFileInputClick} onChange={onFileChange} disabled={configError} />
         </div>
         <p className="file-hint">{selectedFileLabel}</p>
-        <div className="upload-actions-row">
-        <button type="button" onClick={uploadVideo} disabled={isUploading || !selectedFile || configError} style={{ marginTop: '10px' }}>
-          {isUploading ? 'Uploading...' : 'Upload to R2'}
-        </button>
-        {isUploading && (
-          <button type="button" className="btn-cancel-upload" onClick={cancelUpload} style={{ marginTop: '10px' }}>
-            Cancel Upload
-          </button>
+
+        {uploadQueue.length > 0 && (
+          <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
+            <h3 style={{ marginTop: 0, marginBottom: '0.5rem', fontSize: '0.95rem', color: 'var(--text-h)' }}>
+              Upload Queue ({uploadQueue.length} file{uploadQueue.length !== 1 ? 's' : ''})
+            </h3>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg)' }}>
+              {uploadQueue.map((file, idx) => (
+                <li key={idx} style={{ padding: '0.6rem 0.8rem', borderBottom: idx < uploadQueue.length - 1 ? '1px solid var(--border)' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <div style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', color: 'var(--text)', marginBottom: '0.3rem' }}>
+                      {idx + 1}. {file.name}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      {formatBytes(file.size)}
+                    </div>
+                  </div>
+                  <div style={{ marginLeft: '0.8rem', minWidth: '120px', textAlign: 'right' }}>
+                    {uploadStatuses[idx] ? (
+                      <span style={{ fontSize: '0.8rem', color: uploadStatuses[idx] === 'completed' ? 'var(--success)' : uploadStatuses[idx].startsWith('failed') ? 'var(--danger)' : 'var(--accent)' }}>
+                        {uploadStatuses[idx] === 'completed' ? '✓ Done' : uploadStatuses[idx] === 'cancelled' ? '✗ Cancelled' : uploadStatuses[idx].startsWith('failed') ? '✗ ' + uploadStatuses[idx] : uploadStatuses[idx].replace(/-/g, ' ').charAt(0).toUpperCase() + uploadStatuses[idx].slice(1)}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text)' }}>Pending</span>
+                    )}
+                  </div>
+                  {!isUploading && uploadStatuses[idx] !== 'completed' && (
+                    <button type="button" onClick={() => removeFromQueue(idx)} style={{ marginLeft: '0.6rem', background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', padding: '0.3rem', lineHeight: 1 }} title="Remove">✕</button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
+
+        <div className="upload-actions-row">
+          <button type="button" onClick={uploadVideo} disabled={isUploading || uploadQueue.length === 0 || configError} style={{ marginTop: '10px' }}>
+            {isUploading ? `Uploading (${currentUploadIndex + 1}/${uploadQueue.length})...` : 'Upload All'}
+          </button>
+          {uploadQueue.length > 0 && !isUploading && (
+            <button type="button" onClick={clearQueue} style={{ marginTop: '10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)' }}>
+              Clear Queue
+            </button>
+          )}
+          {isUploading && (
+            <button type="button" className="btn-cancel-upload" onClick={cancelUpload} style={{ marginTop: '10px' }}>
+              Cancel Upload
+            </button>
+          )}
         </div>
-        {uploadProgress > 0 && uploadProgress < 100 && (
-          <div className="progress-bar">
-            <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
-            <span className="progress-text">{uploadProgress}%</span>
+
+        {isUploading && (
+          <div style={{ marginTop: '1rem' }}>
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
+              <span className="progress-text">{uploadProgress}%</span>
+            </div>
           </div>
         )}
       </section>
