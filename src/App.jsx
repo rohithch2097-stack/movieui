@@ -717,6 +717,57 @@ function App() {
     }
   }
 
+  const bulkDownloadVideos = async () => {
+    if (selectedVideos.size === 0) {
+      setStatus('No files selected.')
+      return
+    }
+
+    const selectedList = filteredVideos.filter((v) => selectedVideos.has(v.key))
+    const totalSize = selectedList.reduce((sum, item) => sum + (item.size || 0), 0)
+
+    if (!window.confirm(`Download ${selectedVideos.size} file(s) (${formatBytes(totalSize)})?\nBrowser will queue them for download.`)) return
+
+    setStatus(`Starting download of ${selectedVideos.size} file(s)...`)
+    let successCount = 0
+    let failCount = 0
+
+    try {
+      for (const key of selectedVideos) {
+        try {
+          const downloadName = parseObjectKey(key).fileName
+          const command = new GetObjectCommand({
+            Bucket: bucketName,
+            Key: key,
+            ResponseContentDisposition: `attachment; filename="${downloadName.replace(/"/g, '')}"`,
+          })
+
+          const url = await getSignedUrl(r2Client, command, { expiresIn: 60 * 10 })
+          const link = document.createElement('a')
+          link.href = url
+          link.download = downloadName
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+
+          successCount++
+          setStatus(`Downloaded ${successCount} of ${selectedVideos.size}...`)
+          // Small delay between downloads to avoid overwhelming the browser
+          await new Promise((resolve) => setTimeout(resolve, 200))
+        } catch (error) {
+          failCount++
+          console.error(`Failed to download file:`, error)
+        }
+      }
+
+      setTimedStatus(`✅ Downloaded ${successCount} file(s)${failCount > 0 ? ` (${failCount} failed)` : ''}.`)
+    } catch (error) {
+      setTimedStatus(`Bulk download failed: ${error.message}`, 5000)
+    } finally {
+      setDownloadProgress(0)
+    }
+  }
+
   const renameVideo = async (video) => {
     const ownerId = ownershipByKey[video.key]
     if (ownerId && ownerId !== uploadDeviceIdRef.current) {
@@ -1272,9 +1323,14 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               Done
             </button>
             {selectedVideos.size > 0 && (
-              <button type="button" onClick={bulkDeleteVideos} className="btn-bulk-delete">
-                🗑️ Delete {selectedVideos.size} Selected
-              </button>
+              <>
+                <button type="button" onClick={bulkDownloadVideos} className="btn-bulk-download">
+                  ⬇️ Download {selectedVideos.size} Selected
+                </button>
+                <button type="button" onClick={bulkDeleteVideos} className="btn-bulk-delete">
+                  🗑️ Delete {selectedVideos.size} Selected
+                </button>
+              </>
             )}
           </div>
         )}
