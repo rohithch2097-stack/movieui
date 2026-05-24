@@ -1354,13 +1354,14 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                     >⋯</button>
                      {openMenuKey === video.key && (
                        <div className="video-menu-dropdown">
-                         <button
-                           type="button"
-                           className={`video-menu-item ${!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'disabled' : ''}`}
-                           title={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current ? 'Only owner can rename' : 'Rename'}
-                           onClick={() => { renameVideo(video); setOpenMenuKey(null) }}
-                           disabled={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
-                         >✏️</button>
+                         {isAdminUser && (
+                            <button
+                              type="button"
+                              className="video-menu-item"
+                              title="Rename"
+                              onClick={() => { renameVideo(video); setOpenMenuKey(null) }}
+                            >✏️</button>
+                          )}
                          <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
                          <button
                            type="button"
