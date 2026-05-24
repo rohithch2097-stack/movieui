@@ -190,19 +190,19 @@ function App() {
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [previewKey, setPreviewKey] = useState(null)
   const [previewUrl, setPreviewUrl] = useState(null)
-  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
+  const [, setIsLoadingPreview] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedVideos, setSelectedVideos] = useState(new Set())
   const [isSelectionMode, setIsSelectionMode] = useState(false)
    const [videoDurations, setVideoDurations] = useState({})
-   const [copiedKey, setCopiedKey] = useState(null)
+   const [copiedKey] = useState(null)
    const [thumbnailUrls, setThumbnailUrls] = useState({})
-   const [activeTab, setActiveTab] = useState('all') // 'all' | 'video' | 'image'
+   const [activeTab] = useState('all') // 'all' | 'video' | 'image'
    const [openMenuKey, setOpenMenuKey] = useState(null) // Mobile menu state
    const [sortBy, setSortBy] = useState('newest') // 'newest'|'oldest'|'name-az'|'name-za'|'largest'|'smallest'
    const [mobileActiveKey, setMobileActiveKey] = useState(null)
    const [likesByKey, setLikesByKey] = useState({})
-   const [isSyncingLikes, setIsSyncingLikes] = useState(false)
+   const [, setIsSyncingLikes] = useState(false)
    const [pendingLikeKeys, setPendingLikeKeys] = useState(new Set())
    const [likesSyncError, setLikesSyncError] = useState('')
    const [shareModalUrl, setShareModalUrl] = useState(null)
@@ -247,6 +247,8 @@ function App() {
   }
 
     // Check if R2 credentials are configured and load any resumed session
+    // Intentionally run once on mount: initialize device IDs and boot initial fetch.
+    /* eslint-disable react-hooks/exhaustive-deps */
     useEffect(() => {
       likeDeviceIdRef.current = getOrCreateLikeDeviceId()
       uploadDeviceIdRef.current = getOrCreateUploadDeviceId()
@@ -256,6 +258,7 @@ function App() {
         fetchVideos()
       }
     }, [])
+    /* eslint-enable react-hooks/exhaustive-deps */
 
    // Close menu when clicking outside
    useEffect(() => {
@@ -726,8 +729,6 @@ function App() {
     }
   }
 
-  const uploadVideoMultipart = () => uploadBulkVideos()
-
   const cancelUpload = () => {
     if (!uploadAbortControllerRef.current) return
     uploadAbortControllerRef.current.abort()
@@ -1045,7 +1046,7 @@ function App() {
 
     const hadLikeEntry = Object.prototype.hasOwnProperty.call(likesByKey, key)
     const previousLike = likesByKey[key] || { count: 0, likedByMe: false, updatedAt: Date.now() }
-    const nextLikedByMe = !Boolean(previousLike.likedByMe)
+    const nextLikedByMe = !previousLike.likedByMe
     const nextCount = Math.max(0, Number(previousLike.count || 0) + (nextLikedByMe ? 1 : -1))
 
     setPendingLikeKeys((prev) => {
@@ -1161,6 +1162,8 @@ function App() {
   }
 
   // Keyboard: Escape = close, ← → = prev/next
+  // Keep keyboard handlers scoped to preview visibility lifecycle.
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     const handleKey = (e) => {
       if (!previewUrl) return
@@ -1171,6 +1174,7 @@ function App() {
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
   }, [previewUrl, previewIndex, filteredVideos])
+  /* eslint-enable react-hooks/exhaustive-deps */
   const copyToClipboard = async (key) => {
     try {
       const url = await getSignedUrl(
