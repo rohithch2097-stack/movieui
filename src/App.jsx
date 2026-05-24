@@ -180,12 +180,15 @@ function App() {
    const mobileActiveTimerRef = useRef(null)
    const selectionLongPressTimerRef = useRef(null)
    const selectionLongPressHandledRef = useRef(false)
-   const [uploadQueue, setUploadQueue] = useState([])
-   const [uploadStatuses, setUploadStatuses] = useState({})
-   const [currentUploadIndex, setCurrentUploadIndex] = useState(-1)
-   const [videos, setVideos] = useState([])
-   const [status, setStatus] = useState('')
-   const [isUploading, setIsUploading] = useState(false)
+    const [uploadQueue, setUploadQueue] = useState([])
+    const [uploadStatuses, setUploadStatuses] = useState({})
+    const [fileProgressByIndex, setFileProgressByIndex] = useState({})
+    const [currentUploadIndex, setCurrentUploadIndex] = useState(-1)
+    const [videos, setVideos] = useState([])
+    const [status, setStatus] = useState('')
+    const [isUploading, setIsUploading] = useState(false)
+    const [guestNameDialogInput, setGuestNameDialogInput] = useState('')
+    const [showGuestNameDialog, setShowGuestNameDialog] = useState(false)
   const [isLoadingVideos, setIsLoadingVideos] = useState(false)
   const [configError, setConfigError] = useState('')
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -208,8 +211,9 @@ function App() {
    const [, setIsSyncingLikes] = useState(false)
    const [pendingLikeKeys, setPendingLikeKeys] = useState(new Set())
    const [likesSyncError, setLikesSyncError] = useState('')
-   const [ownershipByKey, setOwnershipByKey] = useState({})
-   const [isAdminUser, setIsAdminUser] = useState(() => sessionStorage.getItem(ADMIN_SESSION_KEY) === 'true')
+    const [ownershipByKey, setOwnershipByKey] = useState({})
+    const [guestNameByKey, setGuestNameByKey] = useState({})
+    const [isAdminUser, setIsAdminUser] = useState(() => sessionStorage.getItem(ADMIN_SESSION_KEY) === 'true')
    const [showAdminLogin, setShowAdminLogin] = useState(false)
    const [adminLoginUser, setAdminLoginUser] = useState('')
    const [adminLoginPass, setAdminLoginPass] = useState('')
@@ -412,11 +416,59 @@ function App() {
        }
 
        setOwnershipByKey(ownershipMap)
-     } catch (error) {
-       // Non-critical — continue without ownership info
-       console.error('Failed to fetch ownership info:', error)
-     }
-   }
+      } catch (error) {
+        // Non-critical — continue without ownership info
+        console.error('Failed to fetch ownership info:', error)
+      }
+    }
+
+  const fetchGuestNamesForKeys = async (keys = []) => {
+    if (!keys.length) {
+      setGuestNameByKey({})
+      return
+    }
+
+    try {
+      const guestNameMap = Object.fromEntries(keys.map((key) => [key, null]))
+      const guestNameObjectSet = new Set()
+
+      // List guest name metadata once so we only fetch records that actually exist.
+      let continuationToken = undefined
+      do {
+        const listResponse = await r2Client.send(new ListObjectsV2Command({
+          Bucket: bucketName,
+          Prefix: '__guest_names__/',
+          ContinuationToken: continuationToken,
+        }))
+        ;(listResponse.Contents ?? []).forEach((item) => {
+          if (item?.Key) guestNameObjectSet.add(item.Key)
+        })
+        continuationToken = listResponse.IsTruncated ? listResponse.NextContinuationToken : undefined
+      } while (continuationToken)
+
+      for (const key of keys) {
+        const guestNameObjectKey = `__guest_names__/${encodeURIComponent(key)}.json`
+        if (!guestNameObjectSet.has(guestNameObjectKey)) continue
+
+        try {
+          const response = await r2Client.send(new GetObjectCommand({
+            Bucket: bucketName,
+            Key: guestNameObjectKey,
+          }))
+          const text = await response.Body.transformToString()
+          const guestData = JSON.parse(text)
+          guestNameMap[key] = guestData?.name || null
+        } catch {
+          guestNameMap[key] = null
+        }
+      }
+
+      setGuestNameByKey(guestNameMap)
+    } catch (error) {
+      // Non-critical — continue without guest name info
+      console.error('Failed to fetch guest names:', error)
+    }
+  }
 
   // Bug fix #3 — paginate through ALL objects (ListObjectsV2 max 1000/page)
   const fetchVideos = async () => {
@@ -436,7 +488,7 @@ function App() {
       } while (continuationToken)
 
        const videoList = allItems
-         .filter((item) => item.Key && !item.Key.startsWith('thumbnails/') && !item.Key.startsWith('__likes__/') && !item.Key.startsWith('__owners__/'))
+         .filter((item) => item.Key && !item.Key.startsWith('thumbnails/') && !item.Key.startsWith('__likes__/') && !item.Key.startsWith('__owners__/') && !item.Key.startsWith('__guest_names__/'))
          .map((item) => {
            const parsed = parseObjectKey(item.Key)
            return {
@@ -451,9 +503,10 @@ function App() {
          })
          .sort((a, b) => b.lastModified - a.lastModified)
 
-       setVideos(videoList)
-       await fetchLikesForKeys(videoList.map((video) => video.key))
-       await fetchOwnershipForKeys(videoList.map((video) => video.key))
+        setVideos(videoList)
+        await fetchLikesForKeys(videoList.map((video) => video.key))
+        await fetchOwnershipForKeys(videoList.map((video) => video.key))
+        await fetchGuestNamesForKeys(videoList.map((video) => video.key))
 
       const knownDurations = {}
       videoList.forEach((video) => {
@@ -528,6 +581,7 @@ function App() {
   const clearQueue = () => {
     setUploadQueue([])
     setUploadStatuses({})
+    setFileProgressByIndex({})
     setCurrentUploadIndex(-1)
   }
 
@@ -556,7 +610,7 @@ function App() {
     signal?.addEventListener?.('abort', onAbort, { once: true })
   })
 
-  const uploadSingleFile = async (fileToUpload, queueIndex, abortSignal) => {
+  const uploadSingleFile = async (fileToUpload, queueIndex, abortSignal, uploaderName = '') => {
     const fileType = getFileType(fileToUpload.name) || (fileToUpload.type.startsWith('image/') ? 'image' : 'video')
     const isImage = fileType === 'image'
 
@@ -621,8 +675,9 @@ function App() {
             throw new Error(`Failed to upload part ${partNum} after ${MAX_RETRIES + 1} attempts: ${lastError.message}`)
           }
 
-          uploadedBytes += (end - start)
-          setUploadProgress(Math.min(Math.round((uploadedBytes / fileToUpload.size) * 100), 99))
+           uploadedBytes += (end - start)
+           setUploadProgress(Math.min(Math.round((uploadedBytes / fileToUpload.size) * 100), 99))
+           setFileProgressByIndex((prev) => ({ ...prev, [queueIndex]: Math.min(Math.round((uploadedBytes / fileToUpload.size) * 100), 99) }))
         }
 
         const sortedParts = Object.entries(uploadedParts)
@@ -659,22 +714,41 @@ function App() {
         // Non-critical
       }
 
-      // Store ownership info
-      try {
-        const ownerKey = `__owners__/${encodeURIComponent(objectKey)}.json`
-        const ownerData = JSON.stringify({
-          deviceId: uploadDeviceIdRef.current,
-          uploadedAt: new Date().toISOString(),
-        })
-        await r2Client.send(new PutObjectCommand({
-          Bucket: bucketName,
-          Key: ownerKey,
-          Body: new TextEncoder().encode(ownerData),
-          ContentType: 'application/json',
-        }), { abortSignal })
-      } catch (error) {
-        console.error('Failed to store ownership info:', error)
-      }
+       // Store ownership info
+       try {
+         const ownerKey = `__owners__/${encodeURIComponent(objectKey)}.json`
+         const ownerData = JSON.stringify({
+           deviceId: uploadDeviceIdRef.current,
+           uploadedAt: new Date().toISOString(),
+         })
+         await r2Client.send(new PutObjectCommand({
+           Bucket: bucketName,
+           Key: ownerKey,
+           Body: new TextEncoder().encode(ownerData),
+           ContentType: 'application/json',
+         }), { abortSignal })
+       } catch (error) {
+         console.error('Failed to store ownership info:', error)
+       }
+
+       // Store guest name info if provided
+       if (uploaderName.trim()) {
+         try {
+           const guestNameKey = `__guest_names__/${encodeURIComponent(objectKey)}.json`
+           const guestNameData = JSON.stringify({
+             name: uploaderName.trim(),
+             uploadedAt: new Date().toISOString(),
+           })
+           await r2Client.send(new PutObjectCommand({
+             Bucket: bucketName,
+             Key: guestNameKey,
+             Body: new TextEncoder().encode(guestNameData),
+             ContentType: 'application/json',
+           }), { abortSignal })
+         } catch (error) {
+           console.error('Failed to store guest name:', error)
+         }
+       }
 
       setUploadStatuses((prev) => ({ ...prev, [queueIndex]: 'completed' }))
       if (durationSeconds > 0) {
@@ -709,7 +783,32 @@ function App() {
       return
     }
 
+    // Always show guest name dialog before uploading
+    setGuestNameDialogInput('')
+    setShowGuestNameDialog(true)
+  }
+
+  const cancelUpload = () => {
+    if (!uploadAbortControllerRef.current) return
+    uploadAbortControllerRef.current.abort()
+    setStatus('Canceling uploads...')
+  }
+
+  const handleGuestNameSubmit = (submittedName) => {
+    setShowGuestNameDialog(false)
+    setGuestNameDialogInput('')
+    // Proceed with upload using the submitted name
+    void proceedWithUpload(submittedName)
+  }
+
+  const proceedWithUpload = async (nameToUse) => {
+    if (uploadQueue.length === 0) {
+      setStatus('No files to upload.')
+      return
+    }
+
     setIsUploading(true)
+    setFileProgressByIndex({})
     const uploadAbortController = new AbortController()
     uploadAbortControllerRef.current = uploadAbortController
 
@@ -721,9 +820,10 @@ function App() {
         setCurrentUploadIndex(idx)
         setStatus(`Uploading ${idx + 1} of ${totalFiles}: ${uploadQueue[idx].name}`)
         setUploadProgress(0)
+        setFileProgressByIndex((prev) => ({ ...prev, [idx]: 0 }))
 
         try {
-          await uploadSingleFile(uploadQueue[idx], idx, uploadAbortController.signal)
+          await uploadSingleFile(uploadQueue[idx], idx, uploadAbortController.signal, nameToUse)
         } catch (error) {
           if (!isAbortError(error)) {
             console.error(`File ${idx + 1} failed:`, error)
@@ -736,6 +836,7 @@ function App() {
       setTimedStatus(`✅ Uploaded ${totalFiles} file(s) successfully.`)
       setUploadQueue([])
       setUploadStatuses({})
+      setFileProgressByIndex({})
       setCurrentUploadIndex(-1)
       await fetchVideos()
     } catch (error) {
@@ -745,12 +846,6 @@ function App() {
       setIsUploading(false)
       setUploadProgress(0)
     }
-  }
-
-  const cancelUpload = () => {
-    if (!uploadAbortControllerRef.current) return
-    uploadAbortControllerRef.current.abort()
-    setStatus('Canceling uploads...')
   }
 
   const uploadVideo = () => uploadBulkVideos()
@@ -1634,6 +1729,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                         ? <>{formatDuration(video.durationSeconds || videoDurations[video.key])}</>
                         : null}
                     </p>
+                    {guestNameByKey[video.key] ? (
+                      <p className="video-uploader">📸 Uploaded by {guestNameByKey[video.key]}</p>
+                    ) : null}
                     <p className="video-date">📅 {formatDate(video.lastModified)}</p>
                      <div className="video-engagement-row">
                        {(() => {
@@ -1720,6 +1818,14 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                     </button>
                   ) : null}
                 </div>
+                {(isUploading && currentUploadIndex === idx) || fileProgressByIndex[idx] > 0 ? (
+                  <div className="upload-fab-item-progress">
+                    <div className="progress-bar-small">
+                      <div className="progress-fill-small" style={{ width: `${fileProgressByIndex[idx] || 0}%` }}></div>
+                    </div>
+                    <span className="progress-text-small">{fileProgressByIndex[idx] || 0}%</span>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -1865,6 +1971,73 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                 <button type="button" className="btn-close-preview" onClick={() => setShowAdminLogin(false)}>Cancel</button>
                 <button type="submit" style={{ padding: '0.5rem 1.25rem', background: 'linear-gradient(135deg, #f59e0b, #d97706)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', fontWeight: 600, cursor: 'pointer', fontSize: '0.9rem' }}>
                   Login
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+       )}
+
+      {showGuestNameDialog && (
+        <div className="preview-modal-overlay" onClick={() => setShowGuestNameDialog(false)}>
+          <div className="preview-modal" style={{ maxWidth: '420px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="preview-header">
+              <h3>📸 What's your name?</h3>
+              <button className="close-btn" onClick={() => setShowGuestNameDialog(false)}>✕</button>
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                const finalName = guestNameDialogInput.trim() || 'Anonymous Guest'
+                handleGuestNameSubmit(finalName)
+              }}
+              style={{ padding: 'var(--spacing-xl)', display: 'flex', flexDirection: 'column', gap: '1rem' }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.9rem', color: 'var(--text)', fontWeight: 500 }}>
+                  Please enter your name so photos show "Uploaded by [Your Name]"
+                </label>
+                <input
+                  type="text"
+                  value={guestNameDialogInput}
+                  onChange={(e) => setGuestNameDialogInput(e.target.value)}
+                  placeholder="Enter your name (optional)"
+                  autoFocus
+                  style={{
+                    padding: '0.75rem 0.9rem',
+                    border: '2px solid var(--border)',
+                    borderRadius: 'var(--radius-md)',
+                    background: 'var(--bg)',
+                    color: 'var(--text-h)',
+                    fontSize: '1rem',
+                    fontWeight: 500,
+                  }}
+                />
+              </div>
+              <div className="preview-actions" style={{ marginTop: '0.5rem', gap: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="btn-close-preview"
+                  onClick={() => {
+                    handleGuestNameSubmit('Anonymous Guest')
+                  }}
+                >
+                  Skip
+                </button>
+                <button
+                  type="submit"
+                  style={{
+                    padding: '0.75rem 1.5rem',
+                    background: 'linear-gradient(135deg, #ec4899, #db2777)',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    fontSize: '1rem',
+                  }}
+                >
+                  Continue →
                 </button>
               </div>
             </form>
