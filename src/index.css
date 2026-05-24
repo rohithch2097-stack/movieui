@@ -2,20 +2,20 @@
   /* Light Mode Colors */
   --text: #645d6f;
   --text-h: #171325;
-  --bg: #f9f6fb;
-  --bg-secondary: #ffffff;
-  --border: #ece4f0;
-  --border-light: #f4edf7;
-  --code-bg: #f7f2f5;
-  --accent: #d64072;
-  --accent-bright: #f0628f;
-  --accent-dark: #ad2d58;
-  --accent-bg: rgba(214, 64, 114, 0.12);
-  --accent-border: rgba(214, 64, 114, 0.34);
+  --bg: #f8f2ff;
+  --bg-secondary: #fffaf7;
+  --border: #eee4dc;
+  --border-light: #f7efe8;
+  --code-bg: #faf4ef;
+  --accent: #c7867d;
+  --accent-bright: #dfaaa1;
+  --accent-dark: #a96860;
+  --accent-bg: rgba(199, 134, 125, 0.14);
+  --accent-border: rgba(199, 134, 125, 0.36);
   --success: #10b981;
   --danger: #ef4444;
   --warning: #c89b3c;
-  --social-bg: rgba(244, 243, 236, 0.5);
+  --social-bg: rgba(250, 244, 236, 0.7);
   --shadow: rgba(0, 0, 0, 0.08) 0 10px 20px -2px, rgba(0, 0, 0, 0.04) 0 4px 8px -1px;
   --shadow-lg: rgba(0, 0, 0, 0.12) 0 20px 40px -3px;
 
@@ -92,7 +92,12 @@ html {
 body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 12% 12%, rgba(255, 173, 84, 0.18) 0%, rgba(255, 173, 84, 0) 32%),
+    radial-gradient(circle at 84% 6%, rgba(245, 83, 153, 0.2) 0%, rgba(245, 83, 153, 0) 36%),
+    radial-gradient(circle at 92% 88%, rgba(126, 92, 255, 0.2) 0%, rgba(126, 92, 255, 0) 38%),
+    linear-gradient(135deg, #07060a 0%, #0d0a14 42%, #140d1f 72%, #0b0f1b 100%);
+  background-attachment: fixed;
 }
 
 #root {
