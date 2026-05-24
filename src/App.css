@@ -1289,6 +1289,18 @@ button[type="submit"] {
   font-size: 0.98rem;
   word-break: break-word;
   line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-name-muted {
+  color: #b0988e;
+  font-weight: 400;
+  opacity: 0.6;
+  font-style: italic;
+  pointer-events: none;
+  user-select: none;
 }
 
 .video-date {

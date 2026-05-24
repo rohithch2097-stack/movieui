@@ -1401,6 +1401,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   >{video.fileType === 'image' ? '🖼️' : '🎬'}</div>
 
                   <div className="video-info">
+                    <p className={`video-name${isAdminUser ? '' : ' video-name-muted'}`} title={video.fileName}>
+                      {video.fileName}
+                    </p>
                     <p className="video-meta">
                       {(video.durationSeconds || videoDurations[video.key])
                         ? <>{formatDuration(video.durationSeconds || videoDurations[video.key])}</>
