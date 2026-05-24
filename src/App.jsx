@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import marriageBannerImage from './assets/marrge.png'
 import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand, CopyObjectCommand } from '@aws-sdk/client-s3'
@@ -175,6 +175,7 @@ function App() {
    const fileInputRef = useRef(null)
    const statusTimerRef = useRef(null)
    const menuRef = useRef(null)
+    const topbarMenuRef = useRef(null)
    const uploadAbortControllerRef = useRef(null)
    const mobileActiveTimerRef = useRef(null)
    const selectionLongPressTimerRef = useRef(null)
@@ -193,12 +194,14 @@ function App() {
   const [previewUrl, setPreviewUrl] = useState(null)
   const [, setIsLoadingPreview] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [showMyUploadsOnly, setShowMyUploadsOnly] = useState(false)
   const [selectedVideos, setSelectedVideos] = useState(new Set())
   const [isSelectionMode, setIsSelectionMode] = useState(false)
    const [videoDurations, setVideoDurations] = useState({})
    const [thumbnailUrls, setThumbnailUrls] = useState({})
    const [activeTab] = useState('all') // 'all' | 'video' | 'image'
    const [openMenuKey, setOpenMenuKey] = useState(null) // Mobile menu state
+    const [isTopbarMenuOpen, setIsTopbarMenuOpen] = useState(false)
    const [sortBy, setSortBy] = useState('newest') // 'newest'|'oldest'|'name-az'|'name-za'|'largest'|'smallest'
    const [mobileActiveKey, setMobileActiveKey] = useState(null)
    const [likesByKey, setLikesByKey] = useState({})
@@ -211,8 +214,13 @@ function App() {
    const [adminLoginUser, setAdminLoginUser] = useState('')
    const [adminLoginPass, setAdminLoginPass] = useState('')
    const [adminLoginError, setAdminLoginError] = useState('')
+    const [isSlideshowPlaying, setIsSlideshowPlaying] = useState(false)
+    const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false)
+    const [isTvModePending, setIsTvModePending] = useState(false)
+    const [isLoopPlaybackForced, setIsLoopPlaybackForced] = useState(false)
    const likeDeviceIdRef = useRef('')
    const uploadDeviceIdRef = useRef('')
+    const previewModalRef = useRef(null)
 
   const setTimedStatus = (msg, delay = 5000) => {
     if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
@@ -272,6 +280,17 @@ function App() {
        return () => document.removeEventListener('click', handleClickOutside)
      }
    }, [openMenuKey])
+
+    useEffect(() => {
+      if (!isTopbarMenuOpen) return
+      const handleOutsideTopbarMenu = (event) => {
+        if (topbarMenuRef.current && !topbarMenuRef.current.contains(event.target)) {
+          setIsTopbarMenuOpen(false)
+        }
+      }
+      document.addEventListener('click', handleOutsideTopbarMenu)
+      return () => document.removeEventListener('click', handleOutsideTopbarMenu)
+    }, [isTopbarMenuOpen])
 
   useEffect(() => () => {
     if (selectionLongPressTimerRef.current) clearTimeout(selectionLongPressTimerRef.current)
@@ -736,7 +755,7 @@ function App() {
 
   const uploadVideo = () => uploadBulkVideos()
 
-  const previewVideo = async (key) => {
+  const previewVideo = useCallback(async (key) => {
     setIsLoadingPreview(true)
     setStatus('Loading preview...')
     try {
@@ -749,9 +768,15 @@ function App() {
     } finally {
       setIsLoadingPreview(false)
     }
-  }
+  }, [])
 
   const closePreview = () => {
+    setIsSlideshowPlaying(false)
+    setIsLoopPlaybackForced(false)
+    setIsTvModePending(false)
+    if (document.fullscreenElement === previewModalRef.current && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {})
+    }
     if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl)
     setPreviewKey(null)
     setPreviewUrl(null)
@@ -1135,6 +1160,9 @@ function App() {
     let list = videos
     if (activeTab === 'video') list = list.filter(v => v.fileType === 'video')
     else if (activeTab === 'image') list = list.filter(v => v.fileType === 'image')
+    if (showMyUploadsOnly) {
+      list = list.filter((v) => ownershipByKey[v.key] && ownershipByKey[v.key] === uploadDeviceIdRef.current)
+    }
     if (searchQuery.trim()) list = list.filter(v => v.fileName.toLowerCase().includes(searchQuery.toLowerCase()))
     const sorted = [...list]
     switch (sortBy) {
@@ -1146,19 +1174,146 @@ function App() {
       case 'smallest': sorted.sort((a, b) => a.size - b.size); break
     }
     return sorted
-  }, [videos, searchQuery, activeTab, sortBy])
+  }, [videos, searchQuery, activeTab, sortBy, showMyUploadsOnly, ownershipByKey])
 
   // Feature #6 — prev/next navigation
   const previewIndex = useMemo(
     () => filteredVideos.findIndex(v => v.key === previewKey),
     [previewKey, filteredVideos]
   )
-
-  const navigatePreview = async (direction) => {
+  const previewFileType = previewKey ? getFileType(parseObjectKey(previewKey).fileName) : null
+  const shouldLoopPlayback = isSlideshowPlaying || isPreviewFullscreen || isLoopPlaybackForced
+  const navigatePreview = useCallback(async (direction, wrap = false) => {
+    if (previewIndex < 0 || filteredVideos.length === 0) return
     const newIndex = previewIndex + direction
-    if (newIndex < 0 || newIndex >= filteredVideos.length) return
-    await previewVideo(filteredVideos[newIndex].key)
+    if (!wrap && (newIndex < 0 || newIndex >= filteredVideos.length)) return
+    const targetIndex = wrap
+      ? (newIndex + filteredVideos.length) % filteredVideos.length
+      : newIndex
+    await previewVideo(filteredVideos[targetIndex].key)
+  }, [previewIndex, filteredVideos, previewVideo])
+
+  useEffect(() => {
+    if (!previewKey) return
+    const currentStillVisible = filteredVideos.some((video) => video.key === previewKey)
+    if (!currentStillVisible) {
+      setIsSlideshowPlaying(false)
+      setPreviewKey(null)
+      setPreviewUrl(null)
+    }
+  }, [previewKey, filteredVideos])
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFullscreen = document.fullscreenElement === previewModalRef.current
+      setIsPreviewFullscreen(isFullscreen)
+      if (!isFullscreen && !isSlideshowPlaying) {
+        setIsLoopPlaybackForced(false)
+      }
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [isSlideshowPlaying])
+
+  useEffect(() => {
+    if (!shouldLoopPlayback || !previewUrl || previewFileType !== 'image' || filteredVideos.length < 2) return
+    const timer = window.setTimeout(() => {
+      void navigatePreview(1, true)
+    }, 4500)
+    return () => window.clearTimeout(timer)
+  }, [shouldLoopPlayback, previewUrl, previewFileType, previewKey, filteredVideos.length, navigatePreview])
+
+  useEffect(() => {
+    if (isSlideshowPlaying && filteredVideos.length < 2) {
+      setIsSlideshowPlaying(false)
+    }
+  }, [isSlideshowPlaying, filteredVideos.length])
+
+  const toggleSlideshow = () => {
+    if (isSlideshowPlaying) {
+      setIsSlideshowPlaying(false)
+      setTimedStatus('⏸️ Slideshow paused.', 2000)
+      return
+    }
+    if (filteredVideos.length < 2) {
+      setTimedStatus('Add at least 2 photos/videos to start slideshow.', 3000)
+      return
+    }
+    setIsSlideshowPlaying(true)
+    setTimedStatus('▶️ Slideshow started.', 2000)
   }
+
+  const togglePreviewFullscreen = async () => {
+    const modalElement = previewModalRef.current
+    if (!modalElement) return
+    try {
+      if (document.fullscreenElement === modalElement) {
+        if (document.exitFullscreen) await document.exitFullscreen()
+        if (!isSlideshowPlaying) setIsLoopPlaybackForced(false)
+      } else if (!document.fullscreenElement) {
+        setIsLoopPlaybackForced(true)
+        if (modalElement.requestFullscreen) await modalElement.requestFullscreen()
+      }
+    } catch {
+      setTimedStatus('Fullscreen mode is not available in this browser.', 3000)
+    }
+  }
+
+  const enterPreviewFullscreen = useCallback(async () => {
+    const modalElement = previewModalRef.current
+    if (!modalElement) return false
+    try {
+      if (document.fullscreenElement !== modalElement && modalElement.requestFullscreen) {
+        await modalElement.requestFullscreen()
+      }
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
+  const startTvMode = async () => {
+    if (filteredVideos.length === 0) {
+      setTimedStatus('No media available for TV mode.', 3000)
+      return
+    }
+
+    setIsSlideshowPlaying(true)
+    setIsLoopPlaybackForced(true)
+    setIsTvModePending(true)
+
+    const activePreviewStillVisible = previewKey && filteredVideos.some((video) => video.key === previewKey)
+    const targetKey = activePreviewStillVisible ? previewKey : filteredVideos[0].key
+
+    if (!previewUrl || previewKey !== targetKey) {
+      await previewVideo(targetKey)
+      return
+    }
+
+    const didEnterFullscreen = await enterPreviewFullscreen()
+    if (didEnterFullscreen) {
+      setIsTvModePending(false)
+      setTimedStatus('📺 TV mode started.', 2500)
+    } else {
+      setTimedStatus('Could not enter fullscreen. Start slideshow manually if needed.', 3500)
+    }
+  }
+
+  useEffect(() => {
+    if (!isTvModePending || !previewUrl) return
+
+    const run = async () => {
+      const didEnterFullscreen = await enterPreviewFullscreen()
+      if (didEnterFullscreen) {
+        setTimedStatus('📺 TV mode started.', 2500)
+      } else {
+        setTimedStatus('Could not enter fullscreen. Start slideshow manually if needed.', 3500)
+      }
+      setIsTvModePending(false)
+    }
+
+    void run()
+  }, [isTvModePending, previewUrl, enterPreviewFullscreen])
 
   // Keyboard: Escape = close, ← → = prev/next
   // Keep keyboard handlers scoped to preview visibility lifecycle.
@@ -1184,30 +1339,62 @@ function App() {
     mobileActiveTimerRef.current = setTimeout(() => setMobileActiveKey(null), 350)
   }
 
-
-  const previewFileType = previewKey ? getFileType(parseObjectKey(previewKey).fileName) : null
-
   return (
     <main className="app-shell">
       <section className="app-topbar">
         <h1 className="app-brand-title">{EVENT_NAME}</h1>
-        <div className="event-hero-admin">
-          {isAdminUser ? (
-            <>
-              <span className="admin-pill">👑 Admin</span>
-              <button type="button" onClick={handleAdminLogout} className="admin-logout-btn">
-                Logout
-              </button>
-            </>
-          ) : (
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className={`btn-tv-mode topbar-tv-mode${isSlideshowPlaying ? ' active' : ''}`}
+            onClick={startTvMode}
+            disabled={configError || filteredVideos.length === 0}
+            title="Open fullscreen slideshow for TV display"
+          >
+            {isSlideshowPlaying ? '📺 TV Mode On' : '📺 TV Mode'}
+          </button>
+          <div className="topbar-menu" ref={topbarMenuRef}>
             <button
               type="button"
-              onClick={() => { setShowAdminLogin(true); setAdminLoginError('') }}
-              className="admin-login-btn"
+              className="topbar-menu-btn"
+              title="Open menu"
+              aria-label="Open menu"
+              onClick={() => setIsTopbarMenuOpen((prev) => !prev)}
             >
-              🔑 Admin Login
+              ☰
             </button>
-          )}
+            {isTopbarMenuOpen ? (
+              <div className="topbar-menu-dropdown">
+                {isAdminUser ? (
+                  <>
+                    <span className="topbar-menu-label">👑 Admin mode enabled</span>
+                    <button
+                      type="button"
+                      className="topbar-menu-item"
+                      onClick={() => {
+                        handleAdminLogout()
+                        setIsTopbarMenuOpen(false)
+                      }}
+                    >
+                      Logout
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="topbar-menu-item"
+                    onClick={() => {
+                      setShowAdminLogin(true)
+                      setAdminLoginError('')
+                      setIsTopbarMenuOpen(false)
+                    }}
+                  >
+                    🔑 Admin Login
+                  </button>
+                )}
+              </div>
+            ) : null}
+          </div>
         </div>
       </section>
 
@@ -1256,6 +1443,25 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
         ) : null}
 
         <div className="search-sort-row">
+          <div className="filter-chip-group" role="group" aria-label="Gallery ownership filters">
+            <button
+              type="button"
+              className={`filter-chip${!showMyUploadsOnly ? ' active' : ''}`}
+              onClick={() => setShowMyUploadsOnly(false)}
+              disabled={configError || !showMyUploadsOnly}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className={`filter-chip${showMyUploadsOnly ? ' active' : ''}`}
+              onClick={() => setShowMyUploadsOnly(true)}
+              disabled={configError || showMyUploadsOnly}
+              title="Show only media uploaded from this device"
+            >
+              My Photos
+            </button>
+          </div>
           <div className="search-bar">
             <input
               type="text"
@@ -1318,7 +1524,11 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           </ul>
         ) : filteredVideos.length === 0 ? (
           <p className="empty-state">
-            {searchQuery ? 'No files match your search.' : 'No files found in bucket.'}
+            {showMyUploadsOnly
+              ? 'No files uploaded from this device yet.'
+              : searchQuery
+                ? 'No files match your search.'
+                : 'No files found in bucket.'}
           </p>
         ) : (
            <ul className="video-list" ref={menuRef}>
@@ -1544,50 +1754,71 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
 
       {previewUrl && (
         <div className="preview-modal-overlay" onClick={closePreview}>
-          <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
+          <div className={`preview-modal${isSlideshowPlaying ? ' tv-mode-active' : ''}`} ref={previewModalRef} onClick={(e) => e.stopPropagation()}>
             <div className="preview-header">
               <h3 style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '80%' }}>
                 {previewFileType === 'image' ? '🖼️' : '🎬'} {previewKey ? parseObjectKey(previewKey).fileName : ''}
               </h3>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {shouldLoopPlayback ? <span className="slideshow-indicator">Auto-playing</span> : null}
                 <span style={{ fontSize: '0.8rem', color: 'var(--text)', whiteSpace: 'nowrap' }}>
                   {previewIndex + 1} / {filteredVideos.length}
                 </span>
                 <button className="close-btn" onClick={closePreview}>✕</button>
               </div>
             </div>
-            {previewFileType === 'image' ? (
-              <img
-                src={previewUrl}
-                alt="preview"
-                style={{ width: '100%', maxHeight: '60vh', objectFit: 'contain', display: 'block', borderRadius: 'var(--radius-md)', background: '#000', margin: 'var(--spacing-xl) 0' }}
-              />
-            ) : (
-              <video
-                src={previewUrl}
-                controls
-                autoPlay
-                preload="metadata"
-                onLoadedMetadata={(e) => { if (previewKey) extractDuration(e, previewKey) }}
-                className="preview-video"
-                style={{ width: '100%', maxHeight: '60vh' }}
-              />
-            )}
+            <div className="preview-media-stage">
+              {previewFileType === 'image' ? (
+                <img
+                  src={previewUrl}
+                  alt="preview"
+                  className="preview-media"
+                />
+              ) : (
+                <video
+                  src={previewUrl}
+                  controls
+                  autoPlay
+                  preload="metadata"
+                  onLoadedMetadata={(e) => { if (previewKey) extractDuration(e, previewKey) }}
+                  onEnded={() => {
+                    if (shouldLoopPlayback) {
+                      void navigatePreview(1, true)
+                    }
+                  }}
+                  className="preview-video preview-media"
+                />
+              )}
+            </div>
             <div className="preview-actions">
               <button
                 className="btn-nav-preview"
-                onClick={() => navigatePreview(-1)}
-                disabled={previewIndex <= 0}
+                onClick={() => navigatePreview(-1, shouldLoopPlayback)}
+                disabled={!shouldLoopPlayback && previewIndex <= 0}
                 title="Previous (←)"
               >← Prev</button>
               <button onClick={() => downloadVideo(previewKey)} className="btn-download-from-preview">
                 ⬇️ Download
               </button>
+              <button
+                type="button"
+                onClick={toggleSlideshow}
+                className="btn-slideshow-toggle"
+              >
+                {isSlideshowPlaying ? '⏸️ Pause Slideshow' : '▶️ Start Slideshow'}
+              </button>
+              <button
+                type="button"
+                onClick={togglePreviewFullscreen}
+                className="btn-fullscreen-preview"
+              >
+                {isPreviewFullscreen ? '🗗 Exit Fullscreen' : '⛶ Fullscreen'}
+              </button>
               <button onClick={closePreview} className="btn-close-preview">Close</button>
               <button
                 className="btn-nav-preview"
-                onClick={() => navigatePreview(1)}
-                disabled={previewIndex >= filteredVideos.length - 1}
+                onClick={() => navigatePreview(1, shouldLoopPlayback)}
+                disabled={!shouldLoopPlayback && previewIndex >= filteredVideos.length - 1}
                 title="Next (→)"
               >Next →</button>
             </div>
