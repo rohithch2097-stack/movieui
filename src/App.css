@@ -51,6 +51,39 @@
   justify-content: flex-end;
 }
 
+.topbar-nav-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.topbar-nav-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  padding: 0.5rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 83, 153, 0.34);
+  background: rgba(38, 30, 52, 0.9);
+  color: #fce7f3;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+  letter-spacing: 0.02em;
+}
+
+.topbar-tv-mode {
+  min-width: 108px;
+  justify-content: center;
+}
+
+.topbar-nav-link:hover {
+  border-color: rgba(255, 160, 205, 0.58);
+  background: rgba(53, 40, 73, 0.95);
+  color: #fff;
+}
+
 .topbar-menu {
   position: relative;
 }
@@ -205,6 +238,14 @@
   font-weight: 600;
 }
 
+.marriage-banner-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
 .marriage-banner-rsvp {
   display: inline-flex;
   align-items: center;
@@ -219,6 +260,18 @@
   font-weight: 800;
   letter-spacing: 0.18em;
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  text-decoration: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.marriage-banner-rsvp:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 30px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.marriage-banner-events {
+  background: linear-gradient(180deg, rgba(250, 229, 236, 0.98) 0%, rgba(238, 201, 219, 0.96) 100%);
+  color: #7c1247;
 }
 
 @media (max-width: 640px) {
@@ -1201,7 +1254,18 @@ button[type="submit"] {
     gap: 0.45rem;
   }
 
+  .topbar-nav-links {
+    gap: 0.35rem;
+  }
+
+  .topbar-nav-link {
+    min-width: 72px;
+    padding: 0.42rem 0.58rem;
+    font-size: 0.72rem;
+  }
+
   .topbar-tv-mode {
+    min-width: 96px;
     padding: 0.5rem 0.72rem !important;
     font-size: 0.78rem;
   }

@@ -30,6 +30,12 @@ const ADMIN_SESSION_KEY = 'movieui_admin_session'
 const ADMIN_USERNAME = import.meta.env.VITE_ADMIN_USERNAME || ''
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || ''
 
+const MEDIA_COLLECTION_OPTIONS = [
+  { id: 'pre-wedding', label: 'Pre-Wedding' },
+  { id: 'events', label: 'Events' },
+  { id: 'candid', label: 'Candid' },
+]
+
 const VIDEO_EXTS = /\.(mp4|mov|avi|mkv|webm|m4v|flv|wmv|3gp)$/i
 const IMAGE_EXTS = /\.(jpg|jpeg|png|gif|webp|bmp|avif|svg)$/i
 
@@ -188,6 +194,7 @@ function App() {
     const [status, setStatus] = useState('')
     const [isUploading, setIsUploading] = useState(false)
     const [guestNameDialogInput, setGuestNameDialogInput] = useState('')
+    const [guestCollectionDialogInput, setGuestCollectionDialogInput] = useState('candid')
     const [showGuestNameDialog, setShowGuestNameDialog] = useState(false)
   const [isLoadingVideos, setIsLoadingVideos] = useState(false)
   const [configError, setConfigError] = useState('')
@@ -488,7 +495,7 @@ function App() {
       } while (continuationToken)
 
        const videoList = allItems
-         .filter((item) => item.Key && !item.Key.startsWith('thumbnails/') && !item.Key.startsWith('__likes__/') && !item.Key.startsWith('__owners__/') && !item.Key.startsWith('__guest_names__/'))
+         .filter((item) => item.Key && !item.Key.startsWith('thumbnails/') && !item.Key.startsWith('__likes__/') && !item.Key.startsWith('__owners__/') && !item.Key.startsWith('__guest_names__/') && !item.Key.startsWith('__collections__/'))
          .map((item) => {
            const parsed = parseObjectKey(item.Key)
            return {
@@ -610,7 +617,7 @@ function App() {
     signal?.addEventListener?.('abort', onAbort, { once: true })
   })
 
-  const uploadSingleFile = async (fileToUpload, queueIndex, abortSignal, uploaderName = '') => {
+  const uploadSingleFile = async (fileToUpload, queueIndex, abortSignal, uploaderName = '', uploadCollectionId = 'candid') => {
     const fileType = getFileType(fileToUpload.name) || (fileToUpload.type.startsWith('image/') ? 'image' : 'video')
     const isImage = fileType === 'image'
 
@@ -750,6 +757,23 @@ function App() {
          }
        }
 
+         // Store media collection for gallery categorization
+         try {
+           const collectionKey = `__collections__/${encodeURIComponent(objectKey)}.json`
+           const collectionData = JSON.stringify({
+             collectionId: uploadCollectionId,
+             updatedAt: new Date().toISOString(),
+           })
+           await r2Client.send(new PutObjectCommand({
+             Bucket: bucketName,
+             Key: collectionKey,
+             Body: new TextEncoder().encode(collectionData),
+             ContentType: 'application/json',
+           }), { abortSignal })
+         } catch (error) {
+           console.error('Failed to store collection metadata:', error)
+         }
+
       setUploadStatuses((prev) => ({ ...prev, [queueIndex]: 'completed' }))
       if (durationSeconds > 0) {
         setVideoDurations((prev) => ({ ...prev, [objectKey]: durationSeconds }))
@@ -785,6 +809,7 @@ function App() {
 
     // Always show guest name dialog before uploading
     setGuestNameDialogInput('')
+    setGuestCollectionDialogInput('candid')
     setShowGuestNameDialog(true)
   }
 
@@ -794,14 +819,15 @@ function App() {
     setStatus('Canceling uploads...')
   }
 
-  const handleGuestNameSubmit = (submittedName) => {
+  const handleGuestNameSubmit = (submittedName, submittedCollection) => {
     setShowGuestNameDialog(false)
     setGuestNameDialogInput('')
+    setGuestCollectionDialogInput('candid')
     // Proceed with upload using the submitted name
-    void proceedWithUpload(submittedName)
+    void proceedWithUpload(submittedName, submittedCollection)
   }
 
-  const proceedWithUpload = async (nameToUse) => {
+  const proceedWithUpload = async (nameToUse, collectionToUse) => {
     if (uploadQueue.length === 0) {
       setStatus('No files to upload.')
       return
@@ -823,7 +849,7 @@ function App() {
         setFileProgressByIndex((prev) => ({ ...prev, [idx]: 0 }))
 
         try {
-          await uploadSingleFile(uploadQueue[idx], idx, uploadAbortController.signal, nameToUse)
+          await uploadSingleFile(uploadQueue[idx], idx, uploadAbortController.signal, nameToUse, collectionToUse)
         } catch (error) {
           if (!isAbortError(error)) {
             console.error(`File ${idx + 1} failed:`, error)
@@ -1043,6 +1069,9 @@ function App() {
        try {
          await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `__owners__/${encodeURIComponent(key)}.json` }))
        } catch { /* ownership record may not exist — ignore */ }
+       try {
+         await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `__collections__/${encodeURIComponent(key)}.json` }))
+       } catch { /* collection record may not exist — ignore */ }
        setThumbnailUrls(prev => { const n = { ...prev }; delete n[key]; return n })
        setLikesByKey((prev) => { const next = { ...prev }; delete next[key]; return next })
        setOwnershipByKey((prev) => { const next = { ...prev }; delete next[key]; return next })
@@ -1142,6 +1171,9 @@ function App() {
          try {
            await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `__owners__/${encodeURIComponent(key)}.json` }))
          } catch { /* ignore missing ownership record */ }
+         try {
+           await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `__collections__/${encodeURIComponent(key)}.json` }))
+         } catch { /* ignore missing collection record */ }
        }
        setTimedStatus(`Deleted ${selectedKeys.length} file(s) successfully.`)
        setLikesByKey((prev) => {
@@ -1439,6 +1471,11 @@ function App() {
       <section className="app-topbar">
         <h1 className="app-brand-title">{EVENT_NAME}</h1>
         <div className="topbar-actions">
+          <div className="topbar-nav-links" aria-label="Wedding pages">
+            <a className="topbar-nav-link" href="#/rsvp">RSVP</a>
+            <a className="topbar-nav-link" href="#/events">Events</a>
+            <a className="topbar-nav-link" href="#/gallery">Gallery</a>
+          </div>
           <button
             type="button"
             className={`btn-tv-mode topbar-tv-mode${isSlideshowPlaying ? ' active' : ''}`}
@@ -1508,7 +1545,6 @@ function App() {
           </div>
           <p className="marriage-banner-date">20 DECEMBER 2025</p>
           <p className="marriage-banner-hashtag">#Test1WedsTest2</p>
-          <span className="marriage-banner-rsvp">RSVP NOW</span>
         </div>
       </section>
 
@@ -1989,7 +2025,7 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
               onSubmit={(e) => {
                 e.preventDefault()
                 const finalName = guestNameDialogInput.trim() || 'Anonymous Guest'
-                handleGuestNameSubmit(finalName)
+                handleGuestNameSubmit(finalName, guestCollectionDialogInput)
               }}
               style={{ padding: 'var(--spacing-xl)', display: 'flex', flexDirection: 'column', gap: '1rem' }}
             >
@@ -2014,12 +2050,34 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   }}
                 />
               </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.9rem', color: 'var(--text)', fontWeight: 500 }}>
+                  Select collection
+                </label>
+                <select
+                  value={guestCollectionDialogInput}
+                  onChange={(e) => setGuestCollectionDialogInput(e.target.value)}
+                  style={{
+                    padding: '0.75rem 0.9rem',
+                    border: '2px solid var(--border)',
+                    borderRadius: 'var(--radius-md)',
+                    background: 'var(--bg)',
+                    color: 'var(--text-h)',
+                    fontSize: '1rem',
+                    fontWeight: 500,
+                  }}
+                >
+                  {MEDIA_COLLECTION_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="preview-actions" style={{ marginTop: '0.5rem', gap: '0.5rem' }}>
                 <button
                   type="button"
                   className="btn-close-preview"
                   onClick={() => {
-                    handleGuestNameSubmit('Anonymous Guest')
+                    handleGuestNameSubmit('Anonymous Guest', guestCollectionDialogInput)
                   }}
                 >
                   Skip
