@@ -242,6 +242,23 @@ function App() {
     if (selectionLongPressTimerRef.current) clearTimeout(selectionLongPressTimerRef.current)
   }, [])
 
+  useEffect(() => {
+    if (!isSelectionMode) return
+
+    const handleOutsideSelectionPress = (event) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+
+      // Keep selection mode while interacting with cards or bulk action controls.
+      if (target.closest('.video-item') || target.closest('.bulk-actions')) return
+
+      exitSelectionMode()
+    }
+
+    document.addEventListener('pointerdown', handleOutsideSelectionPress)
+    return () => document.removeEventListener('pointerdown', handleOutsideSelectionPress)
+  }, [isSelectionMode])
+
   const selectedFileLabel = useMemo(() => {
     if (uploadQueue.length === 0) return 'No files selected'
     if (uploadQueue.length === 1) {
