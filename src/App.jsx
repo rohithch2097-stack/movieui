@@ -1269,7 +1269,6 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
             <span>🗂 {storageSummary.totalFiles} files</span>
             <span>🎬 {storageSummary.videoCount}</span>
             <span>🖼️ {storageSummary.imageCount}</span>
-            <span>💾 {formatBytes(storageSummary.totalBytes)} used</span>
           </div>
         ) : null}
 
@@ -1420,12 +1419,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                   >{video.fileType === 'image' ? '🖼️' : '🎬'}</div>
 
                   <div className="video-info">
-                    <p className="video-name">{video.fileName}</p>
                     <p className="video-meta">
-                      <span className={`file-type-badge ${video.fileType}`}>{video.fileType}</span>
-                      {' '}{video.sizeLabel}
                       {(video.durationSeconds || videoDurations[video.key])
-                        ? <> · {formatDuration(video.durationSeconds || videoDurations[video.key])}</>
+                        ? <>{formatDuration(video.durationSeconds || videoDurations[video.key])}</>
                         : null}
                     </p>
                     <p className="video-date">📅 {formatDate(video.lastModified)}</p>
