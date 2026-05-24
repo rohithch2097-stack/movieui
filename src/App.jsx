@@ -196,7 +196,6 @@ function App() {
   const [selectedVideos, setSelectedVideos] = useState(new Set())
   const [isSelectionMode, setIsSelectionMode] = useState(false)
    const [videoDurations, setVideoDurations] = useState({})
-   const [copiedKey] = useState(null)
    const [thumbnailUrls, setThumbnailUrls] = useState({})
    const [activeTab] = useState('all') // 'all' | 'video' | 'image'
    const [openMenuKey, setOpenMenuKey] = useState(null) // Mobile menu state
@@ -206,7 +205,6 @@ function App() {
    const [, setIsSyncingLikes] = useState(false)
    const [pendingLikeKeys, setPendingLikeKeys] = useState(new Set())
    const [likesSyncError, setLikesSyncError] = useState('')
-   const [shareModalUrl, setShareModalUrl] = useState(null)
    const [ownershipByKey, setOwnershipByKey] = useState({})
    const [isAdminUser, setIsAdminUser] = useState(() => sessionStorage.getItem(ADMIN_SESSION_KEY) === 'true')
    const [showAdminLogin, setShowAdminLogin] = useState(false)
@@ -1176,21 +1174,6 @@ function App() {
     return () => document.removeEventListener('keydown', handleKey)
   }, [previewUrl, previewIndex, filteredVideos])
   /* eslint-enable react-hooks/exhaustive-deps */
-  const copyToClipboard = async (key) => {
-    try {
-      const url = await getSignedUrl(
-        r2Client,
-        new GetObjectCommand({ Bucket: bucketName, Key: key }),
-        { expiresIn: 60 * 60 * 24 } // 24 hours
-      )
-      // Show modal instead of using clipboard API to avoid permission dialog
-      setShareModalUrl(url)
-    } catch (error) {
-      setTimedStatus(`Failed to generate link: ${error.message}`, 5000)
-    }
-  }
-
-
   const openUploadPicker = () => {
     fileInputRef.current?.click()
   }
@@ -1378,7 +1361,6 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                            onClick={() => { renameVideo(video); setOpenMenuKey(null) }}
                            disabled={!isAdminUser && ownershipByKey[video.key] && ownershipByKey[video.key] !== uploadDeviceIdRef.current}
                          >✏️</button>
-                         <button type="button" className="video-menu-item" title="Copy link" onClick={() => { copyToClipboard(video.key); setOpenMenuKey(null) }}>🔗</button>
                          <button type="button" className="video-menu-item" title="Download"  onClick={() => { downloadVideo(video.key);   setOpenMenuKey(null) }}>⬇️</button>
                          <button
                            type="button"
@@ -1450,9 +1432,6 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
                     </div>
                   </div>
                    <div className="video-actions">
-                     <button type="button" onClick={() => copyToClipboard(video.key)} className={`btn-copy ${copiedKey === video.key ? 'copied' : ''}`} title="Copy link">
-                       {copiedKey === video.key ? '✓' : '🔗'}
-                     </button>
                      <button type="button" onClick={() => downloadVideo(video.key)} className="btn-download" title="Download">⬇️</button>
                      <button
                        type="button"
@@ -1600,41 +1579,6 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
         </div>
       )}
 
-      {shareModalUrl && (
-        <div className="preview-modal-overlay" onClick={() => setShareModalUrl(null)}>
-          <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="preview-header">
-              <h3>📋 Share Link</h3>
-              <button className="close-btn" onClick={() => setShareModalUrl(null)}>✕</button>
-            </div>
-            <div style={{ padding: 'var(--spacing-xl)', minHeight: '150px' }}>
-              <p style={{ marginBottom: 'var(--spacing-md)', color: 'var(--text)' }}>
-                Link valid for 24 hours. Select all and copy manually:
-              </p>
-              <textarea
-                readOnly
-                value={shareModalUrl}
-                style={{
-                  width: '100%',
-                  height: '100px',
-                  padding: 'var(--spacing-md)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-md)',
-                  fontFamily: 'monospace',
-                  fontSize: '0.85rem',
-                  resize: 'none',
-                  color: 'var(--text-h)',
-                  backgroundColor: 'var(--bg)',
-                }}
-                onClick={(e) => e.target.select()}
-              />
-            </div>
-            <div className="preview-actions">
-              <button onClick={() => setShareModalUrl(null)} className="btn-close-preview">Close</button>
-            </div>
-          </div>
-        </div>
-      )}
       {showAdminLogin && (
         <div className="preview-modal-overlay" onClick={() => setShowAdminLogin(false)}>
           <div className="preview-modal" style={{ maxWidth: '380px' }} onClick={(e) => e.stopPropagation()}>
