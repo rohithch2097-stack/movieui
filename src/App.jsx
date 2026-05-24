@@ -22,6 +22,7 @@ const LONG_PRESS_MS = 450
 
 const bucketName = import.meta.env.VITE_R2_BUCKET_NAME || 'movieui'
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const EVENT_NAME = import.meta.env.VITE_EVENT_NAME || 'Event Moments Gallery'
 const LIKE_DEVICE_ID_STORAGE_KEY = 'movieui_like_device_id'
 const UPLOAD_DEVICE_ID_STORAGE_KEY = 'movieui_upload_device_id'
 const ADMIN_SESSION_KEY = 'movieui_admin_session'
@@ -193,7 +194,6 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedVideos, setSelectedVideos] = useState(new Set())
   const [isSelectionMode, setIsSelectionMode] = useState(false)
-  const [isDragOver, setIsDragOver] = useState(false)
    const [videoDurations, setVideoDurations] = useState({})
    const [copiedKey, setCopiedKey] = useState(null)
    const [thumbnailUrls, setThumbnailUrls] = useState({})
@@ -312,6 +312,7 @@ function App() {
       imageCount: videos.filter(v => v.fileType === 'image').length,
     }
   }, [videos])
+
 
   const fetchLikesForKeys = async (keys) => {
     if (!keys.length) {
@@ -1184,32 +1185,9 @@ function App() {
     }
   }
 
-  const handleDragOver = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(true)
-  }
 
-  const handleDragLeave = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-  }
-
-  const handleDrop = async (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-    const files = e.dataTransfer.files
-    if (files.length > 0) {
-      const file = files[0]
-      if (!isSupportedFile(file)) {
-        setTimedStatus('Unsupported file type. Please drop a video or image.', 4000)
-        return
-      }
-      setSelectedFile(file)
-      setStatus(`Selected: ${file.name}`)
-    }
+  const openUploadPicker = () => {
+    fileInputRef.current?.click()
   }
 
   const triggerMobileCardEffect = (key) => {
@@ -1223,38 +1201,27 @@ function App() {
 
   return (
     <main className="app-shell">
-      <div>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
-          <div>
-            <h1>🎬 Media Vault</h1>
-            <p className="subtitle">Upload, manage, and share your videos & images securely in the cloud</p>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', paddingTop: '0.25rem', flexShrink: 0 }}>
-            {isAdminUser ? (
-              <>
-                <span style={{ fontSize: '0.8rem', background: 'linear-gradient(135deg, #f59e0b, #d97706)', color: '#fff', padding: '0.25rem 0.65rem', borderRadius: '999px', fontWeight: 600 }}>
-                  👑 Admin
-                </span>
-                <button
-                  type="button"
-                  onClick={handleAdminLogout}
-                  style={{ fontSize: '0.78rem', padding: '0.25rem 0.6rem', background: 'transparent', border: '1px solid var(--border)', borderRadius: '999px', color: 'var(--text)', cursor: 'pointer' }}
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => { setShowAdminLogin(true); setAdminLoginError('') }}
-                style={{ fontSize: '0.8rem', padding: '0.28rem 0.75rem', background: 'transparent', border: '1px solid var(--border)', borderRadius: '999px', color: 'var(--text)', cursor: 'pointer' }}
-              >
-                🔑 Admin Login
+      <section className="app-topbar">
+        <h1 className="app-brand-title">{EVENT_NAME}</h1>
+        <div className="event-hero-admin">
+          {isAdminUser ? (
+            <>
+              <span className="admin-pill">👑 Admin</span>
+              <button type="button" onClick={handleAdminLogout} className="admin-logout-btn">
+                Logout
               </button>
-            )}
-          </div>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setShowAdminLogin(true); setAdminLoginError('') }}
+              className="admin-login-btn"
+            >
+              🔑 Admin Login
+            </button>
+          )}
         </div>
-      </div>
+      </section>
 
       {configError ? (
         <section className="panel error">
@@ -1268,99 +1235,9 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
         </section>
       ) : null}
 
-      <section className="panel">
-        <h2>Upload Files</h2>
-        <div
-          className={`drag-drop-area ${isDragOver ? 'drag-over' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            setIsDragOver(false)
-            const files = e.dataTransfer.files
-            if (files.length > 0) {
-              const newFiles = Array.from(files).filter(f => {
-                if (!isSupportedFile(f)) {
-                  setTimedStatus(`Unsupported file: ${f.name}`, 4000)
-                  return false
-                }
-                return true
-              })
-              if (newFiles.length > 0) {
-                setUploadQueue((prev) => [...prev, ...newFiles])
-              }
-            }
-          }}
-        >
-          <p className="drag-drop-text">Drag & drop multiple videos or images here, or click to select</p>
-          <input ref={fileInputRef} type="file" accept="video/*,image/*" multiple onClick={onFileInputClick} onChange={onFileChange} disabled={configError} />
-        </div>
-        <p className="file-hint">{selectedFileLabel}</p>
 
-        {uploadQueue.length > 0 && (
-          <div style={{ marginTop: '1rem', marginBottom: '1rem' }}>
-            <h3 style={{ marginTop: 0, marginBottom: '0.5rem', fontSize: '0.95rem', color: 'var(--text-h)' }}>
-              Upload Queue ({uploadQueue.length} file{uploadQueue.length !== 1 ? 's' : ''})
-            </h3>
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg)' }}>
-              {uploadQueue.map((file, idx) => (
-                <li key={idx} style={{ padding: '0.6rem 0.8rem', borderBottom: idx < uploadQueue.length - 1 ? '1px solid var(--border)' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
-                  <div style={{ flex: 1, overflow: 'hidden' }}>
-                    <div style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', color: 'var(--text)', marginBottom: '0.3rem' }}>
-                      {idx + 1}. {file.name}
-                    </div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                      {formatBytes(file.size)}
-                    </div>
-                  </div>
-                  <div style={{ marginLeft: '0.8rem', minWidth: '120px', textAlign: 'right' }}>
-                    {uploadStatuses[idx] ? (
-                      <span style={{ fontSize: '0.8rem', color: uploadStatuses[idx] === 'completed' ? 'var(--success)' : uploadStatuses[idx].startsWith('failed') ? 'var(--danger)' : 'var(--accent)' }}>
-                        {uploadStatuses[idx] === 'completed' ? '✓ Done' : uploadStatuses[idx] === 'cancelled' ? '✗ Cancelled' : uploadStatuses[idx].startsWith('failed') ? '✗ ' + uploadStatuses[idx] : uploadStatuses[idx].replace(/-/g, ' ').charAt(0).toUpperCase() + uploadStatuses[idx].slice(1)}
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text)' }}>Pending</span>
-                    )}
-                  </div>
-                  {!isUploading && uploadStatuses[idx] !== 'completed' && (
-                    <button type="button" onClick={() => removeFromQueue(idx)} style={{ marginLeft: '0.6rem', background: 'transparent', border: 'none', color: 'var(--text)', cursor: 'pointer', padding: '0.3rem', lineHeight: 1 }} title="Remove">✕</button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div className="upload-actions-row">
-          <button type="button" onClick={uploadVideo} disabled={isUploading || uploadQueue.length === 0 || configError} style={{ marginTop: '10px' }}>
-            {isUploading ? `Uploading (${currentUploadIndex + 1}/${uploadQueue.length})...` : 'Upload All'}
-          </button>
-          {uploadQueue.length > 0 && !isUploading && (
-            <button type="button" onClick={clearQueue} style={{ marginTop: '10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)' }}>
-              Clear Queue
-            </button>
-          )}
-          {isUploading && (
-            <button type="button" className="btn-cancel-upload" onClick={cancelUpload} style={{ marginTop: '10px' }}>
-              Cancel Upload
-            </button>
-          )}
-        </div>
-
-        {isUploading && (
-          <div style={{ marginTop: '1rem' }}>
-            <div className="progress-bar">
-              <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
-              <span className="progress-text">{uploadProgress}%</span>
-            </div>
-          </div>
-        )}
-      </section>
-
-      <section className="panel">
+      <section className="panel panel-gallery" id="gallery-panel">
         <div className="videos-header">
-          <h2>Files</h2>
           <button type="button" onClick={fetchVideos} disabled={isLoadingVideos || isSyncingLikes || configError}>
             {isLoadingVideos ? 'Refreshing...' : 'Refresh'}
           </button>
@@ -1373,19 +1250,6 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           <span>🎬 {storageSummary.videoCount}</span>
           <span>🖼️ {storageSummary.imageCount}</span>
           <span>💾 {formatBytes(storageSummary.totalBytes)} used</span>
-        </div>
-
-        <div className="tab-bar">
-          {['all', 'video', 'image'].map(tab => (
-            <button
-              key={tab}
-              type="button"
-              className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab === 'all' ? '🗂 All' : tab === 'video' ? '🎬 Videos' : '🖼️ Images'}
-            </button>
-          ))}
         </div>
 
         <div className="search-sort-row">
@@ -1593,6 +1457,76 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
           </div>
         )}
       </section>
+
+      <input
+        ref={fileInputRef}
+        className="fab-file-input"
+        type="file"
+        accept="video/*,image/*"
+        multiple
+        onClick={onFileInputClick}
+        onChange={onFileChange}
+        disabled={configError}
+      />
+
+      {uploadQueue.length > 0 || isUploading ? (
+        <section className="upload-fab-panel">
+          <div className="upload-fab-header">
+            <strong>Upload Queue</strong>
+            <span>{selectedFileLabel}</span>
+          </div>
+          <ul className="upload-fab-queue">
+            {uploadQueue.map((file, idx) => (
+              <li key={idx} className="upload-fab-item">
+                <div className="upload-fab-item-main">
+                  <p>{file.name}</p>
+                  <small>{formatBytes(file.size)}</small>
+                </div>
+                <div className="upload-fab-item-meta">
+                  {uploadStatuses[idx] ? (
+                    <span className={`upload-state ${uploadStatuses[idx] === 'completed' ? 'done' : uploadStatuses[idx].startsWith('failed') ? 'fail' : 'active'}`}>
+                      {uploadStatuses[idx] === 'completed' ? 'Done' : uploadStatuses[idx] === 'cancelled' ? 'Cancelled' : uploadStatuses[idx].startsWith('failed') ? 'Failed' : 'Working'}
+                    </span>
+                  ) : (
+                    <span className="upload-state">Pending</span>
+                  )}
+                  {!isUploading && uploadStatuses[idx] !== 'completed' ? (
+                    <button type="button" className="upload-fab-item-remove" onClick={() => removeFromQueue(idx)} title="Remove">
+                      ✕
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div className="upload-fab-actions">
+            <button type="button" onClick={uploadVideo} disabled={isUploading || uploadQueue.length === 0 || configError}>
+              {isUploading ? `Uploading (${currentUploadIndex + 1}/${uploadQueue.length})...` : 'Upload All'}
+            </button>
+            {!isUploading ? (
+              <button type="button" className="admin-logout-btn" onClick={clearQueue}>Clear</button>
+            ) : (
+              <button type="button" className="btn-cancel-upload" onClick={cancelUpload}>Cancel</button>
+            )}
+          </div>
+          {isUploading ? (
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
+              <span className="progress-text">{uploadProgress}%</span>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      <button
+        type="button"
+        className="upload-fab"
+        onClick={openUploadPicker}
+        title="Add photos or videos"
+        disabled={configError}
+      >
+        +
+      </button>
 
       {status ? <p className="status-box">{status}</p> : null}
 
