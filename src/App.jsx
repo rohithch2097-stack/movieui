@@ -723,17 +723,21 @@ function App() {
       return
     }
 
-    const selectedList = filteredVideos.filter((v) => selectedVideos.has(v.key))
+    const selectedKeys = Array.from(selectedVideos)
+    const selectedList = filteredVideos.filter((v) => selectedKeys.includes(v.key))
     const totalSize = selectedList.reduce((sum, item) => sum + (item.size || 0), 0)
 
-    if (!window.confirm(`Download ${selectedVideos.size} file(s) (${formatBytes(totalSize)})?\nBrowser will queue them for download.`)) return
+    if (!window.confirm(`Download ${selectedKeys.length} file(s) (${formatBytes(totalSize)})?\nBrowser will queue them for download.`)) return
 
-    setStatus(`Starting download of ${selectedVideos.size} file(s)...`)
+    // Return to normal browsing view right after user confirms bulk download.
+    exitSelectionMode()
+
+    setStatus(`Starting download of ${selectedKeys.length} file(s)...`)
     let successCount = 0
     let failCount = 0
 
     try {
-      for (const key of selectedVideos) {
+      for (const key of selectedKeys) {
         try {
           const downloadName = parseObjectKey(key).fileName
           const command = new GetObjectCommand({
@@ -751,7 +755,7 @@ function App() {
           document.body.removeChild(link)
 
           successCount++
-          setStatus(`Downloaded ${successCount} of ${selectedVideos.size}...`)
+          setStatus(`Downloaded ${successCount} of ${selectedKeys.length}...`)
           // Small delay between downloads to avoid overwhelming the browser
           await new Promise((resolve) => setTimeout(resolve, 200))
         } catch (error) {
