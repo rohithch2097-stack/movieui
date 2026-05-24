@@ -1237,20 +1237,17 @@ VITE_R2_BUCKET_NAME=movieui`}</pre>
 
 
       <section className="panel panel-gallery" id="gallery-panel">
-        <div className="videos-header">
-          <button type="button" onClick={fetchVideos} disabled={isLoadingVideos || isSyncingLikes || configError}>
-            {isLoadingVideos ? 'Refreshing...' : 'Refresh'}
-          </button>
-        </div>
 
         {likesSyncError ? <p className="likes-warning">Likes syncing issue: {likesSyncError}</p> : null}
 
-        <div className="storage-summary">
-          <span>🗂 {storageSummary.totalFiles} files</span>
-          <span>🎬 {storageSummary.videoCount}</span>
-          <span>🖼️ {storageSummary.imageCount}</span>
-          <span>💾 {formatBytes(storageSummary.totalBytes)} used</span>
-        </div>
+        {isAdminUser ? (
+          <div className="storage-summary">
+            <span>🗂 {storageSummary.totalFiles} files</span>
+            <span>🎬 {storageSummary.videoCount}</span>
+            <span>🖼️ {storageSummary.imageCount}</span>
+            <span>💾 {formatBytes(storageSummary.totalBytes)} used</span>
+          </div>
+        ) : null}
 
         <div className="search-sort-row">
           <div className="search-bar">
