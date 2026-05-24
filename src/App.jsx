@@ -923,24 +923,29 @@ function App() {
   }
 
    const bulkDeleteVideos = async () => {
+     const selectedKeys = Array.from(selectedVideos)
+
      // Check ownership for all selected videos
-     const unowned = Array.from(selectedVideos).filter(key => {
+     const unowned = selectedKeys.filter(key => {
        const ownerId = ownershipByKey[key]
        return ownerId && ownerId !== uploadDeviceIdRef.current
      })
      if (unowned.length > 0) {
-       setTimedStatus(`❌ You can only delete ${unowned.length} of the ${selectedVideos.size} selected file(s) (you don't own the others).`, 5000)
+       setTimedStatus(`❌ You can only delete ${unowned.length} of the ${selectedKeys.length} selected file(s) (you don't own the others).`, 5000)
        return
      }
 
-     if (selectedVideos.size === 0) { setStatus('No files selected.'); return }
-     const selectedList = filteredVideos.filter(v => selectedVideos.has(v.key))
+     if (selectedKeys.length === 0) { setStatus('No files selected.'); return }
+     const selectedList = filteredVideos.filter(v => selectedKeys.includes(v.key))
      const totalSize = selectedList.reduce((sum, item) => sum + (item.size || 0), 0)
-     if (!window.confirm(`Delete ${selectedVideos.size} file(s) (${formatBytes(totalSize)})?\nThis action cannot be undone.`)) return
+     if (!window.confirm(`Delete ${selectedKeys.length} file(s) (${formatBytes(totalSize)})?\nThis action cannot be undone.`)) return
+
+     // Return to normal browsing view immediately after confirmation.
+     exitSelectionMode()
 
      setStatus('Deleting files...')
      try {
-       for (const key of selectedVideos) {
+       for (const key of selectedKeys) {
          await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }))
          try {
            await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `thumbnails/${key}.jpg` }))
@@ -949,16 +954,15 @@ function App() {
            await r2Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: `__owners__/${encodeURIComponent(key)}.json` }))
          } catch { /* ignore missing ownership record */ }
        }
-       setTimedStatus(`Deleted ${selectedVideos.size} file(s) successfully.`)
-       setSelectedVideos(new Set())
+       setTimedStatus(`Deleted ${selectedKeys.length} file(s) successfully.`)
        setLikesByKey((prev) => {
          const next = { ...prev }
-         for (const key of selectedVideos) delete next[key]
+         for (const key of selectedKeys) delete next[key]
          return next
        })
        setOwnershipByKey((prev) => {
          const next = { ...prev }
-         for (const key of selectedVideos) delete next[key]
+         for (const key of selectedKeys) delete next[key]
          return next
        })
        await fetchVideos()
